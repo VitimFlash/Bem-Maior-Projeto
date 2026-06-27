@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bem Maior</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="auth-container">
+        <div class="logo">
+            <span class="moeda-icon">🪙</span>
+            <h1>Bem Maior</h1>
+            <p class="subtitulo">O jogo da escolha coletiva</p>
+        </div>
+
+        <!-- Abas -->
+        <div class="tabs">
+            <button class="tab ativo" onclick="mostrarAba('login')">Entrar</button>
+            <button class="tab" onclick="mostrarAba('cadastro')">Cadastrar</button>
+        </div>
+
+        <!-- Login -->
+        <div id="aba-login" class="form-box">
+            <div class="campo">
+                <label>Usuário</label>
+                <input type="text" id="login-username" placeholder="Seu nome de usuário"/>
+            </div>
+            <div class="campo">
+                <label>Senha</label>
+                <input type="password" id="login-senha" placeholder="Sua senha"/>
+            </div>
+            <button class="btn-principal" onclick="fazerLogin()">Entrar</button>
+            <p id="login-erro" class="mensagem-erro"></p>
+        </div>
+
+        <!-- Cadastro -->
+        <div id="aba-cadastro" class="form-box escondido">
+            <div class="campo">
+                <label>Usuário</label>
+                <input type="text" id="cad-username" placeholder="Escolha um nome de usuário"/>
+            </div>
+            <div class="campo">
+                <label>Senha</label>
+                <input type="password" id="cad-senha" placeholder="Escolha uma senha"/>
+            </div>
+            <div class="campo">
+                <label>Confirmar Senha</label>
+                <input type="password" id="cad-confirma" placeholder="Repita a senha"/>
+            </div>
+            <button class="btn-principal" onclick="fazerCadastro()">Criar Conta</button>
+            <p id="cad-erro" class="mensagem-erro"></p>
+            <p id="cad-sucesso" class="mensagem-sucesso"></p>
+        </div>
+    </div>
+
+    <script>
+        function mostrarAba(aba) {
+            document.getElementById('aba-login').classList.add('escondido');
+            document.getElementById('aba-cadastro').classList.add('escondido');
+            document.getElementById('aba-' + aba).classList.remove('escondido');
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('ativo'));
+            event.target.classList.add('ativo');
+        }
+
+        async function fazerLogin() {
+            const username = document.getElementById('login-username').value;
+            const senha = document.getElementById('login-senha').value;
+
+            const resposta = await fetch('/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, senha })
+            });
+
+            if (resposta.ok) {
+                window.location.href = '/lobby.html';
+            } else {
+                document.getElementById('login-erro').textContent = 'Usuário ou senha incorretos.';
+            }
+        }
+
+        async function fazerCadastro() {
+            const username = document.getElementById('cad-username').value;
+            const senha = document.getElementById('cad-senha').value;
+            const confirma = document.getElementById('cad-confirma').value;
+
+            if (senha !== confirma) {
+                document.getElementById('cad-erro').textContent = 'As senhas não coincidem.';
+                return;
+            }
+
+            const resposta = await fetch('/auth/cadastro', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, senha })
+            });
+
+            if (resposta.ok) {
+                document.getElementById('cad-sucesso').textContent = 'Conta criada! Faça login.';
+                document.getElementById('cad-erro').textContent = '';
+            } else {
+                const erro = await resposta.text();
+                document.getElementById('cad-erro').textContent = erro;
+            }
+        }
+    </script>
+</body>
+</html>

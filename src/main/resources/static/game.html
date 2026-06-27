@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bem Maior — Jogo</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+    <div class="logo-pequeno">🪙 Bem Maior</div>
+    <div class="header-info">
+        <span id="info-rodada">Rodada 1</span>
+        <span id="info-fase" class="badge-fase">Aguardando</span>
+    </div>
+    <div class="usuario-info">
+        <span id="nome-usuario"></span>
+    </div>
+</header>
+
+<!-- OVERLAY DE EVENTO -->
+<div id="overlay-evento" class="overlay-evento escondido">
+    <div class="evento-card">
+        <div id="evento-emoji" class="evento-emoji"></div>
+        <h2 id="evento-titulo"></h2>
+        <p id="evento-descricao"></p>
+        <div id="evento-animacao" class="evento-animacao"></div>
+        <button class="btn-principal" onclick="fecharEvento()">Entendido!</button>
+    </div>
+</div>
+
+<!-- OVERLAY DE VOTAÇÃO -->
+<div id="overlay-votacao" class="overlay-evento escondido">
+    <div class="evento-card">
+        <h2>🗳️ Votação</h2>
+        <p id="votacao-descricao"></p>
+        <div class="votacao-placar">
+            <span class="voto-favor">✅ <span id="votos-favor">0</span></span>
+            <span class="voto-contra">❌ <span id="votos-contra">0</span></span>
+        </div>
+        <div class="votacao-botoes">
+            <button class="btn-favor" onclick="votar(true)">✅ Eliminar</button>
+            <button class="btn-contra" onclick="votar(false)">❌ Manter</button>
+        </div>
+        <p id="votacao-status" class="mensagem-sucesso"></p>
+    </div>
+</div>
+
+<!-- OVERLAY DE DECISÃO DE EVENTO -->
+<div id="overlay-decisao-evento" class="overlay-evento escondido">
+    <div class="evento-card" id="card-decisao-evento">
+        <!-- Preenchido dinamicamente por JS -->
+    </div>
+</div>
+
+<!-- ARENA PRINCIPAL -->
+<div class="arena">
+
+    <!-- MESA CIRCULAR -->
+    <div class="mesa" id="mesa">
+
+        <!-- CAIXA DE TRIBUTOS (centro) -->
+        <div class="caixa-tributos" id="caixa-tributos">
+            <div class="meta-label">Meta</div>
+            <div class="meta-valor" id="meta-valor">-- 🪙</div>
+            <div class="tributos-label">Tributos</div>
+            <div class="tributos-valor" id="tributos-valor">0 🪙</div>
+            <div class="multiplicador">×2 ÷ jogadores</div>
+        </div>
+
+        <!-- JOGADORES (posicionados dinamicamente via JS) -->
+        <div id="jogadores-container"></div>
+
+    </div>
+
+</div>
+
+<!-- PAINEL DE DECISÃO (aparece na fase de escolha) -->
+<div id="painel-decisao" class="painel-decisao escondido">
+    <div class="decisao-card">
+        <h3>⚖️ Distribua suas 5 moedas</h3>
+
+        <div id="evento-rodada-info" class="evento-rodada-info escondido"></div>
+
+        <div class="decisao-controles">
+            <div class="decisao-item">
+                <label>🏛️ Tributos</label>
+                <div class="contador">
+                    <button onclick="ajustarMoeda('tributo', -1)">−</button>
+                    <span id="moedas-tributo">0</span>
+                    <button onclick="ajustarMoeda('tributo', 1)">+</button>
+                </div>
+            </div>
+            <div class="moedas-restantes">
+                <span id="moedas-restantes">5</span> moedas restantes
+            </div>
+            <div class="decisao-item">
+                <label>💼 Bem-Pessoal</label>
+                <div class="contador">
+                    <button onclick="ajustarMoeda('bem', -1)">−</button>
+                    <span id="moedas-bem">0</span>
+                    <button onclick="ajustarMoeda('bem', 1)">+</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="painel-evento-extra" class="escondido">
+            <!-- Ações extras do evento (roleta, duplicata, etc) -->
+        </div>
+
+        <button class="btn-principal" onclick="confirmarDecisao()"
+                id="btn-confirmar">Confirmar</button>
+        <p id="decisao-erro" class="mensagem-erro"></p>
+    </div>
+</div>
+
+<!-- PAINEL LATERAL DE PLACAR -->
+<div class="painel-placar">
+    <h3>📊 Placar</h3>
+    <div id="lista-placar"></div>
+    <div class="meta-placar">
+        Meta: <span id="meta-placar-valor">--</span> 🪙
+    </div>
+</div>
+
+<!-- OVERLAY FINAL -->
+<div id="overlay-final" class="overlay-evento escondido">
+    <div class="evento-card resultado-card">
+        <h2>🏆 Fim de Jogo!</h2>
+        <div id="resultado-vencedor"></div>
+        <div id="resultado-lista"></div>
+        <button class="btn-principal" onclick="voltarLobby()">Voltar ao Lobby</button>
+    </div>
+</div>
+
+<!-- MENSAGEM FLUTUANTE -->
+<div id="mensagem-flutuante" class="mensagem-flutuante escondido"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+<script src="game.js"></script>
+</body>
+</html>

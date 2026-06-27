@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bem Maior — Lobby</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+</head>
+<body>
+    <header class="header">
+        <div class="logo-pequeno">🪙 Bem Maior</div>
+        <div class="usuario-info">
+            <span id="nome-usuario"></span>
+            <button class="btn-sair" onclick="sair()">Sair</button>
+        </div>
+    </header>
+
+    <div class="lobby-container">
+
+        <!-- Criar Sala -->
+        <div class="card">
+            <h2>🏠 Criar Nova Sala</h2>
+            <div class="campo">
+                <label>Número de jogadores</label>
+                <div class="slider-box">
+                    <input type="range" id="max-jogadores" min="2" max="10" value="4"
+                        oninput="atualizarSlider()"/>
+                    <span id="valor-jogadores">4 jogadores</span>
+                </div>
+            </div>
+            <div class="info-sala">
+                <div class="info-item">
+                    <span class="info-label">Rodadas</span>
+                    <span id="total-rodadas" class="info-valor">8</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Meta</span>
+                    <span id="meta-sala" class="info-valor">48 🪙</span>
+                </div>
+            </div>
+            <button class="btn-principal" onclick="criarSala()">Criar Sala</button>
+        </div>
+
+        <!-- Entrar em Sala -->
+        <div class="card">
+            <h2>🚪 Entrar em Sala</h2>
+            <div class="campo">
+                <label>Código da sala</label>
+                <input type="text" id="codigo-sala" placeholder="Ex: AB12CD"
+                    maxlength="6" style="text-transform: uppercase"/>
+            </div>
+            <button class="btn-principal" onclick="entrarSala()">Entrar</button>
+            <p id="lobby-erro" class="mensagem-erro"></p>
+        </div>
+
+        <!-- Sala criada (aparece após criar) -->
+    <div id="sala-criada" class="card escondido">
+        <h2>✅ Sala Criada!</h2>
+        <p>Compartilhe o código com os jogadores:</p>
+        <div class="codigo-sala-box">
+            <span id="codigo-gerado"></span>
+            <button class="btn-copiar" onclick="copiarCodigo()">📋 Copiar</button>
+        </div>
+        <div class="jogadores-lista">
+            <h3>Jogadores na sala:</h3>
+            <ul id="lista-jogadores">
+                <li style="color: var(--texto-fraco)">Carregando...</li>
+            </ul>
+        </div>
+        <button class="btn-principal" id="btn-iniciar"
+            onclick="iniciarJogo()" disabled style="opacity:0.5">
+        Aguardando jogadores...
+        </button>
+        <!-- Botão de atualizar manual para debug -->
+        <button onclick="recarregarJogadores(document.getElementById('codigo-gerado').textContent, maxJogadoresAtual)"
+                style="margin-top:8px; background:none; border:1px solid var(--texto-fraco);
+                    color:var(--texto-fraco); padding:6px 12px; border-radius:6px; cursor:pointer;">
+            🔄 Atualizar lista
+        </button>
+        </div>
+
+    </div>
+
+    <script>
+        // Variáveis globais
+let stompClient = null;
+let codigoSalaAtual = null;
+let maxJogadoresAtual = 2;
+
+// Atualiza lista a cada 3 segundos enquanto aguarda jogadores
+let intervaloAtualizacao = null;
+
+function iniciarAtualizacaoAutomatica(codigoSala) {
+    // Para qualquer intervalo anterior
+    if (intervaloAtualizacao) clearInterval(intervaloAtualizacao);
+
+    // Atualiza imediatamente
+    recarregarJogadores(codigoSala, maxJogadoresAtual);
+
+    // Continua atualizando a cada 3 segundos
+    intervaloAtualizacao = setInterval(() => {
+        recarregarJogadores(codigoSala, maxJogadoresAtual);
+    }, 3000);
+}
+
+function pararAtualizacaoAutomatica() {
+    if (intervaloAtualizacao) {
+        clearInterval(intervaloAtualizacao);
+        intervaloAtualizacao = null;
+    }
+}
+
+// Carrega nome do usuário logado
+fetch('/auth/me')
+    .then(r => r.json())
+    .then(u => document.getElementById('nome-usuario').textContent = u.username)
+    .catch(() => window.location.href = '/index.html');
+
+function atualizarSlider() {
+    const jogadores = parseInt(document.getElementById('max-jogadores').value);
+    maxJogadoresAtual = jogadores;
+    document.getElementById('valor-jogadores').textContent = jogadores + ' jogadores';
+    document.getElementById('total-rodadas').textContent = jogadores * 2;
+    document.getElementById('meta-sala').textContent =
+        Math.floor(jogadores * 5 * 2.4) + ' 🪙';
+}
+
+async function criarSala() {
+    const maxJogadores = parseInt(document.getElementById('max-jogadores').value);
+    maxJogadoresAtual = maxJogadores;
+
+    const resposta = await fetch('/sala/criar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxJogadores })
+    });
+
+    if (resposta.ok) {
+        const sala = await resposta.json();
+        codigoSalaAtual = sala.codigo;
+
+        document.getElementById('codigo-gerado').textContent = sala.codigo;
+        document.getElementById('sala-criada').classList.remove('escondido');
+
+        // Conecta WebSocket
+        conectarWebSocketLobby(sala.codigo, maxJogadores);
+
+    } else {
+        const erro = await resposta.text();
+        alert(erro);
+    }
+}
+
+function conectarWebSocketLobby(codigoSala, maxJogadores) {
+    if (stompClient && stompClient.connected) return;
+
+    const socket = new SockJS('/ws-bemmaior');
+    stompClient = Stomp.over(socket);
+    stompClient.debug = null;
+
+    stompClient.connect({}, async () => {
+        stompClient.subscribe('/topic/sala/' + codigoSala, (msg) => {
+            const dados = JSON.parse(msg.body);
+            if (dados.tipo === 'JOGADORES_ATUALIZADOS') {
+                atualizarListaJogadores(dados.jogadores, dados.maxJogadores);
+            }
+            if (dados.tipo === 'JOGO_INICIADO') {
+                pararAtualizacaoAutomatica();
+                window.location.href = '/game.html?sala=' + codigoSala;
+            }
+        });
+
+        // Inicia atualização automática via HTTP como fallback
+        iniciarAtualizacaoAutomatica(codigoSala);
+    });
+}
+
+// Busca jogadores via HTTP e atualiza a lista
+async function recarregarJogadores(codigoSala, maxJogadores) {
+    try {
+        const resp = await fetch('/sala/' + codigoSala + '/jogadores');
+        if (resp.ok) {
+            const jogadores = await resp.json();
+            atualizarListaJogadores(jogadores, maxJogadores || maxJogadoresAtual);
+        }
+    } catch(e) {
+        console.error('Erro ao carregar jogadores:', e);
+    }
+}
+
+function atualizarListaJogadores(jogadores, max) {
+    const lista = document.getElementById('lista-jogadores');
+
+    // Mostra a lista com os jogadores
+    if (jogadores && jogadores.length > 0) {
+        lista.innerHTML = jogadores.map(j => `<li>👤 ${j}</li>`).join('');
+    } else {
+        lista.innerHTML = '<li style="color: var(--texto-fraco)">Nenhum jogador ainda...</li>';
+    }
+
+    const btn = document.getElementById('btn-iniciar');
+    const total = jogadores ? jogadores.length : 0;
+    const maximo = max || maxJogadoresAtual;
+
+    if (total >= 2) {
+        btn.disabled = false;
+        btn.textContent = `Iniciar Jogo (${total}/${maximo})`;
+        btn.style.opacity = '1';
+    } else {
+        btn.disabled = true;
+        btn.textContent = `Aguardando jogadores... (${total}/${maximo})`;
+        btn.style.opacity = '0.5';
+    }
+}
+
+async function entrarSala() {
+    const codigo = document.getElementById('codigo-sala').value.toUpperCase();
+    if (!codigo) {
+        document.getElementById('lobby-erro').textContent = 'Digite um código!';
+        return;
+    }
+
+    const resposta = await fetch('/sala/entrar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codigo })
+    });
+
+    if (resposta.ok) {
+        const sala = await resposta.json();
+        window.location.href = '/game.html?sala=' + sala.codigo;
+    } else {
+        const erro = await resposta.text();
+        document.getElementById('lobby-erro').textContent = erro;
+    }
+}
+
+function copiarCodigo() {
+    const codigo = document.getElementById('codigo-gerado').textContent;
+    navigator.clipboard.writeText(codigo);
+}
+
+async function iniciarJogo() {
+    pararAtualizacaoAutomatica();
+    const codigo = document.getElementById('codigo-gerado').textContent;
+
+    try {
+        const resposta = await fetch('/sala/iniciar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ codigo })
+        });
+
+        const texto = await resposta.text();
+
+        if (resposta.ok) {
+            // Aguarda redirecionamento via WebSocket
+            // Se não vier em 3 segundos, redireciona manualmente
+            setTimeout(() => {
+                window.location.href = '/game.html?sala=' + codigo;
+            }, 3000);
+        } else {
+            alert('Erro ao iniciar: ' + texto);
+            iniciarAtualizacaoAutomatica(codigo);
+        }
+    } catch(e) {
+        alert('Erro de conexão: ' + e.message);
+        iniciarAtualizacaoAutomatica(codigo);
+    }
+}
+
+async function sair() {
+    await fetch('/auth/logout', { method: 'POST' });
+    window.location.href = '/index.html';
+}
+    </script>
+</body>
+</html>

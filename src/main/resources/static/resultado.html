@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bem Maior — Resultado</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="header">
+    <div class="logo-pequeno">🪙 Bem Maior</div>
+</header>
+
+<div class="resultado-container">
+
+    <!-- TÍTULO -->
+    <div class="resultado-titulo">
+        <div id="titulo-emoji">🏆</div>
+        <h1 id="titulo-texto">Fim de Jogo!</h1>
+        <p id="titulo-subtitulo"></p>
+    </div>
+
+    <!-- VENCEDOR DESTAQUE -->
+    <div id="card-vencedor" class="card-vencedor escondido">
+        <div class="vencedor-coroa">👑</div>
+        <div id="vencedor-nome" class="vencedor-nome"></div>
+        <div id="vencedor-total" class="vencedor-total"></div>
+    </div>
+
+    <!-- META -->
+    <div class="meta-resultado">
+        <span>Meta da partida:</span>
+        <span id="meta-resultado-valor" class="meta-resultado-valor">-- 🪙</span>
+    </div>
+
+    <!-- LISTA DE JOGADORES -->
+    <div class="resultado-lista" id="resultado-lista">
+        <!-- Preenchido dinamicamente -->
+    </div>
+
+    <!-- HISTÓRICO DE RODADAS -->
+    <div class="historico-container">
+        <h2>📜 Histórico de Rodadas</h2>
+        <div id="historico-rodadas"></div>
+    </div>
+
+    <!-- BOTÕES -->
+    <div class="resultado-acoes">
+        <button class="btn-principal" onclick="voltarLobby()">
+            🏠 Voltar ao Lobby
+        </button>
+    </div>
+
+</div>
+
+<script>
+    const params = new URLSearchParams(window.location.search);
+    const codigoSala = params.get('sala');
+
+    async function carregarResultado() {
+        // Carrega estado final da sala
+        const resp = await fetch('/jogo/resultado/' + codigoSala);
+        if (!resp.ok) {
+            window.location.href = '/lobby.html';
+            return;
+        }
+
+        const dados = await resp.json();
+        renderizarResultado(dados);
+    }
+
+    function renderizarResultado(dados) {
+        const meta = dados.meta || 0;
+        document.getElementById('meta-resultado-valor').textContent = meta + ' 🪙';
+
+        const totais = dados.totaisFinais || {};
+        const bens = dados.bensPessoais || {};
+        const contas = dados.contasPessoais || {};
+        const vencedor = dados.vencedor;
+
+        // Título
+        if (vencedor) {
+            document.getElementById('titulo-emoji').textContent = '🏆';
+            document.getElementById('titulo-texto').textContent = 'Temos um vencedor!';
+            document.getElementById('titulo-subtitulo').textContent =
+                'Parabéns a todos que bateram a meta!';
+
+            // Card do vencedor
+            document.getElementById('card-vencedor').classList.remove('escondido');
+            document.getElementById('vencedor-nome').textContent = vencedor;
+            document.getElementById('vencedor-total').textContent =
+                totais[vencedor] + ' 🪙 no total';
+        } else {
+            document.getElementById('titulo-emoji').textContent = '😞';
+            document.getElementById('titulo-texto').textContent = 'Ninguém bateu a meta!';
+            document.getElementById('titulo-subtitulo').textContent =
+                'Todos os jogadores foram eliminados.';
+        }
+
+        // Lista de jogadores ordenada por total
+        const lista = document.getElementById('resultado-lista');
+        lista.innerHTML = '';
+
+        Object.entries(totais)
+            .sort((a, b) => b[1] - a[1])
+            .forEach(([nome, total], index) => {
+                const acimaMeta = total >= meta;
+                const conta = contas[nome] || 0;
+                const bem = bens[nome] || 0;
+
+                const posicao = index + 1;
+                const medalha = posicao === 1 ? '🥇' :
+                                posicao === 2 ? '🥈' :
+                                posicao === 3 ? '🥉' : posicao + 'º';
+
+                const item = document.createElement('div');
+                item.className = 'resultado-jogador ' +
+                    (acimaMeta ? 'acima-meta' : 'abaixo-meta');
+
+                item.innerHTML = `
+                    <div class="resultado-posicao">${medalha}</div>
+                    <div class="resultado-jogador-info">
+                        <div class="resultado-jogador-nome">${nome}</div>
+                        <div class="resultado-jogador-detalhe">
+                            <span class="detalhe-item">
+                                💰 Conta-pessoal: <strong>${conta}</strong>
+                            </span>
+                            <span class="detalhe-item">
+                                💼 Bem-pessoal: <strong>${bem}</strong>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="resultado-jogador-total">
+                        <span class="total-valor">${total} 🪙</span>
+                        <span class="total-status">
+                            ${acimaMeta ? '✅ Acima da meta' : '❌ Abaixo da meta'}
+                        </span>
+                    </div>
+                `;
+                lista.appendChild(item);
+            });
+
+        // Histórico de rodadas
+        carregarHistorico();
+    }
+
+    async function carregarHistorico() {
+        try {
+            const resp = await fetch('/jogo/historico/' + codigoSala);
+            if (!resp.ok) return;
+            const rodadas = await resp.json();
+
+            const container = document.getElementById('historico-rodadas');
+            container.innerHTML = '';
+
+            rodadas.forEach(rodada => {
+                const item = document.createElement('div');
+                item.className = 'historico-item';
+                item.innerHTML = `
+                    <div class="historico-rodada-num">Rodada ${rodada.numero}</div>
+                    <div class="historico-detalhes">
+                        <span>🏛️ Tributos: ${rodada.totalTributos} 🪙</span>
+                        <span>📤 Distribuído: ${rodada.valorDistribuido} 🪙/jogador</span>
+                        <span>🗑️ Descartado: ${rodada.moedasDescartadas} 🪙</span>
+                        ${rodada.evento
+                            ? `<span>⚡ Evento: ${rodada.evento.tipo}</span>`
+                            : '<span>— Sem evento</span>'}
+                    </div>
+                `;
+                container.appendChild(item);
+            });
+        } catch(e) {
+            console.log('Historico nao disponivel');
+        }
+    }
+
+    function voltarLobby() {
+        window.location.href = '/lobby.html';
+    }
+
+    carregarResultado();
+</script>
+</body>
+</html>
