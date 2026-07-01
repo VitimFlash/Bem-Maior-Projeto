@@ -38,6 +38,8 @@ public class JogoController {
                 return ResponseEntity.ok("Rodada iniciada!");
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
         }
 
@@ -173,15 +175,16 @@ public class JogoController {
     }
 
     // Inicia nova rodada com evento se necessário
-    public void iniciarNovaRodada(String codigoSala) {
+    public void iniciarNovaRodada(String codigoSala) throws InterruptedException {
         try {
             Sala sala = salaRepository.findByCodigo(codigoSala)
                     .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
-            List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
 
-            // Fase de discussão ANTES de cada rodada (incluindo a primeira)
             iniciarFaseDiscussao(codigoSala);
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
         } catch (Exception e) {
             System.err.println("Erro ao iniciar rodada: " + e.getMessage());
             throw new RuntimeException(e.getMessage());
@@ -233,44 +236,92 @@ public class JogoController {
         List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
 
         // Cria rodada
-        EstadoSala estado = jogoService.iniciarRodadaERetornarEstado(codigoSala);
+        jogoService.iniciarRodadaERetornarEstado(codigoSala);
 
-        // Verifica evento
         Rodada rodadaAtiva = rodadaRepository
                 .findBySalaAndStatus(sala, "AGUARDANDO_DECISOES")
                 .orElse(null);
 
-        if (rodadaAtiva != null && eventoService.deveHaverEvento(sala.getRodadaAtual())) {
-            Evento evento = eventoService.sortearEvento(rodadaAtiva, ativos);
+        Evento eventoSorteado = null;
 
-            if (evento != null) {
-                rodadaAtiva.setEvento(evento);
+        if (rodadaAtiva != null && eventoService.deveHaverEvento(sala.getRodadaAtual())) {
+            eventoSorteado = eventoService.sortearEvento(rodadaAtiva, ativos);
+
+            if (eventoSorteado != null) {
+                rodadaAtiva.setEvento(eventoSorteado);
                 rodadaRepository.save(rodadaAtiva);
 
-                String descricao = eventoService.gerarDescricao(
-                        evento, jogadorRepository.findBySalaAndAtivoTrue(sala));
-                evento.setDescricao(descricao);
+                String descricao = eventoService.gerarDescricao(eventoSorteado, ativos);
+                eventoSorteado.setDescricao(descricao);
 
+                // Anuncia evento para todos
                 EstadoSala estadoEvento = jogoService.montarEstadoSala(codigoSala);
                 estadoEvento.setFase("EVENTO");
-                estadoEvento.setMensagem("⚡ " + evento.getTipo());
+                estadoEvento.setMensagem("⚡ " + eventoSorteado.getTipo());
 
-                EstadoSala.EventoInfo info = new EstadoSala.EventoInfo();
-                info.tipo = evento.getTipo();
-                info.descricao = descricao;
-                info.requerDecisao = evento.isRequerDecisao();
-                info.jogadorAlvoId = evento.getJogadorAlvoId();
-                estadoEvento.setEventoAtualInfo(info);
+                // Envia estado personalizado para cada jogador
+                for (Jogador jogador : ativos) {
+                    String username = jogador.getUsuario().getUsername();
+                    EstadoSala estadoPersonalizado =
+                            jogoService.montarEstadoSala(codigoSala);
+                    estadoPersonalizado.setFase("EVENTO");
+                    estadoPersonalizado.setMensagem("⚡ " + eventoSorteado.getTipo());
 
-                mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoEvento);
+                    EstadoSala.EventoInfo info = jogoService
+                            .montarInfoEventoParaJogador(eventoSorteado, username, sala);
+                    estadoPersonalizado.setEventoAtualInfo(info);
+
+                    mensageiro.convertAndSendToUser(
+                            username,
+                            "/queue/estado-jogador-evento",
+                            estadoPersonalizado
+                    );
+                }
+
+                // Aguarda 8 segundos de animação
                 Thread.sleep(8000);
+
+                // Se evento decide ANTES das moedas, envia fase de decisão do evento
+                if (jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo())) {
+                    for (Jogador jogador : ativos) {
+                        String username = jogador.getUsuario().getUsername();
+                        EstadoSala estadoDecisaoEvento =
+                                jogoService.montarEstadoSala(codigoSala);
+                        estadoDecisaoEvento.setFase("DECISAO_EVENTO_ANTES");
+                        estadoDecisaoEvento.setDecisaoEventoAntes(true);
+
+                        EstadoSala.EventoInfo info = jogoService
+                                .montarInfoEventoParaJogador(eventoSorteado, username, sala);
+                        estadoDecisaoEvento.setEventoAtualInfo(info);
+
+                        mensageiro.convertAndSendToUser(
+                                username,
+                                "/queue/estado-jogador-evento",
+                                estadoDecisaoEvento
+                        );
+                    }
+                    // Aguarda 30 segundos para decisão do evento
+                    Thread.sleep(30000);
+                }
             }
         }
 
-        // Inicia decisão
-        estado = jogoService.montarEstadoSala(codigoSala);
-        estado.setFase("DECISAO");
-        estado.setMensagem("Rodada " + sala.getRodadaAtual() + " iniciada! Faça sua escolha.");
-        mensageiro.convertAndSend("/topic/sala/" + codigoSala, estado);
+        // Envia fase de decisão das moedas
+        EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
+        estadoDecisao.setFase("DECISAO");
+        estadoDecisao.setMensagem("Rodada " + sala.getRodadaAtual() +
+                " iniciada! Faça sua escolha.");
+
+        // Se tem evento que decide DEPOIS, informa o frontend
+        if (eventoSorteado != null &&
+                !jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo())) {
+            estadoDecisao.setDecisaoEventoDepois(true);
+            EstadoSala.EventoInfo info = new EstadoSala.EventoInfo();
+            info.tipo = eventoSorteado.getTipo();
+            info.requerDecisao = eventoSorteado.isRequerDecisao();
+            estadoDecisao.setEventoAtualInfo(info);
+        }
+
+        mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDecisao);
     }
 }

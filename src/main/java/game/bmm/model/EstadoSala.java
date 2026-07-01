@@ -19,9 +19,10 @@ public class EstadoSala {
     private int tempoDiscussao;
     private String jogadorEliminado;
     private List<String> jogadoresEliminados;
-
+    private String vencedor;
+    private boolean decisaoEventoAntes;
+    private boolean decisaoEventoDepois;
     private Map<String, Integer> contasPessoais; // nome → conta-pessoal (público)
-
     private EventoInfo eventoAtualInfo;
 
     public EventoInfo getEventoAtualInfo() { return eventoAtualInfo; }
@@ -46,7 +47,12 @@ public class EstadoSala {
     // Revelado apenas no FIM:
     private Map<String, Integer> bensPessoais;   // nome → bem-pessoal (oculto durante jogo)
     private Map<String, Integer> totaisFinais;   // nome → conta + bem-pessoal
-    private String vencedor;
+
+
+    public boolean isDecisaoEventoAntes() { return decisaoEventoAntes; }
+    public void setDecisaoEventoAntes(boolean d) { this.decisaoEventoAntes = d; }
+    public boolean isDecisaoEventoDepois() { return decisaoEventoDepois; }
+    public void setDecisaoEventoDepois(boolean d) { this.decisaoEventoDepois = d; }
 
     public List<String> getJogadoresEliminados() { return jogadoresEliminados; }
     public void setJogadoresEliminados(List<String> j) { this.jogadoresEliminados = j; }

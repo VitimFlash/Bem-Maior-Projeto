@@ -36,6 +36,11 @@ public class JogoService {
         Jogador jogador = buscarJogador(username, sala);
         Rodada rodada = buscarRodadaAtiva(sala);
 
+        // Bloqueia jogador eliminado
+        if (!jogador.isAtivo() || jogador.isEliminado()) {
+            throw new RuntimeException("Jogador eliminado não pode participar.");
+        }
+
         // Valida se já decidiu
         if (decisaoRepository.existsByJogadorAndRodada(jogador, rodada)) {
             throw new RuntimeException("Voce já registrou sua decisão nesta rodada.");
@@ -78,25 +83,27 @@ public class JogoService {
     public Tributo processarTributos(String codigoSala) {
         Sala sala = buscarSala(codigoSala);
         Rodada rodada = buscarRodadaAtiva(sala);
+
+        // Apenas jogadores ATIVOS (não eliminados)
         List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
         List<Decisao> decisoes = decisaoRepository.findByRodada(rodada);
 
-        // Soma todos os tributos
         int totalArrecadado = decisoes.stream()
                 .mapToInt(Decisao::getMoedasTributo)
                 .sum();
 
         int totalDistribuido = totalArrecadado * 2;
-        int porJogador = totalDistribuido / ativos.size(); // inteiro
-        int descartado = totalDistribuido % ativos.size(); // sobra descartada
+        // Divide apenas pelo número de jogadores ATIVOS
+        int porJogador = ativos.isEmpty() ? 0 : totalDistribuido / ativos.size();
+        int descartado = ativos.isEmpty() ? totalDistribuido :
+                totalDistribuido % ativos.size();
 
-        // Distribui para a conta-pessoal de cada jogador ativo
+        // Distribui APENAS para jogadores ativos
         for (Jogador jogador : ativos) {
             jogador.setContaPessoal(jogador.getContaPessoal() + porJogador);
             jogadorRepository.save(jogador);
         }
 
-        // Salva o tributo da rodada
         Tributo tributo = new Tributo();
         tributo.setRodada(rodada);
         tributo.setTotalArrecadado(totalArrecadado);
@@ -105,7 +112,6 @@ public class JogoService {
         tributo.setDescartado(descartado);
         tributoRepository.save(tributo);
 
-        // Conclui a rodada
         rodada.setTotalTributos(totalArrecadado);
         rodada.setValorDistribuido(porJogador);
         rodada.setMoedasDescartadas(descartado);
@@ -413,5 +419,66 @@ public class JogoService {
         }
 
         return resultado;
+    }
+
+    public EstadoSala.EventoInfo montarInfoEventoParaJogador(
+            Evento evento, String username, Sala sala) {
+
+        EstadoSala.EventoInfo info = new EstadoSala.EventoInfo();
+        info.tipo = evento.getTipo();
+        info.descricao = evento.getDescricao();
+        info.requerDecisao = evento.isRequerDecisao();
+        info.jogadorAlvoId = evento.getJogadorAlvoId();
+
+        List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
+        Jogador jogadorAtual = buscarJogador(username, sala);
+        String idAtual = jogadorAtual.getId().toString();
+
+        switch (evento.getTipo()) {
+            case "ROUBO" -> {
+                // O alvo do evento é o ladrão
+                info.souExecutor = idAtual.equals(evento.getJogadorAlvoId());
+            }
+            case "VENENO" -> {
+                info.souFeiticeiro = idAtual.equals(evento.getJogadorAlvoId());
+            }
+            case "PARCEIROS" -> {
+                // jogadorAlvoId contém "id1,id2"
+                if (evento.getJogadorAlvoId() != null) {
+                    String[] ids = evento.getJogadorAlvoId().split(",");
+                    info.souParceiro = java.util.Arrays.stream(ids)
+                            .anyMatch(id -> id.equals(idAtual));
+                }
+            }
+            case "EXPOSICAO" -> {
+                info.souExpositor = idAtual.equals(evento.getJogadorAlvoId());
+            }
+            case "TRAICAO" -> {
+                info.souTraidor = idAtual.equals(evento.getJogadorAlvoId());
+            }
+            case "BOMBA_RELOGIO" -> {
+                info.souPortador = idAtual.equals(evento.getJogadorAlvoId());
+            }
+            case "ROLETA", "DUPLICATA", "OSMOSE", "COPIA", "IGUALDADE",
+                 "LIDERANCA" -> {
+                info.souExecutor = true; // todos têm ação
+            }
+        }
+        return info;
+    }
+
+    public boolean eventoDecideAntesDasMoedas(String tipo) {
+        return switch (tipo) {
+            case "VENENO", "LIDERANCA", "IGUALDADE",
+                 "BOMBA_RELOGIO", "PARCEIROS", "ROUBO", "COPIA"-> true;
+            default -> false;
+        };
+    }
+
+    public boolean eventoDecideDepoisDasMoedas(String tipo) {
+        return switch (tipo) {
+            case  "ROLETA", "DUPLICATA", "EXPOSICAO", "OSMOSE", "TRAICAO" -> false;
+            default -> false;
+        };
     }
 }

@@ -45,6 +45,23 @@ function conectarWebSocket() {
                 tratarEstadoJogador(JSON.parse(msg.body));
             });
 
+            // Canal personalizado de evento por jogador
+           stompClient.subscribe('/user/queue/estado-jogador-evento', (msg) => {
+                const dados = JSON.parse(msg.body);
+                console.log('Evento personalizado:', dados);
+
+                if (dados.fase === 'EVENTO' && dados.eventoAtualInfo) {
+                    mostrarEvento(dados.eventoAtualInfo);
+                }
+
+                if (dados.fase === 'DECISAO_EVENTO_ANTES' && dados.eventoAtualInfo) {
+                    // Mostra interface do evento ANTES das moedas
+                    document.getElementById('painel-decisao').classList.add('escondido');
+                    eventoAtual = dados.eventoAtualInfo;
+                    mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
+                }
+            });
+
             // Busca estado atual após conectar
             buscarEstadoAtual();
         },
@@ -121,6 +138,24 @@ function tratarMensagemSala(dados) {
             break;
 
         case 'DECISAO':
+            estadoAtual = dados;
+            // Remove painel de evento antes se existir
+            const painelAntes = document.getElementById('painel-evento-antes');
+            if (painelAntes) painelAntes.remove();
+
+            atualizarMesa(dados);
+            mostrarFaseDecisao(dados);
+            atualizarInfoRodada(dados);
+
+            // Se tem evento que decide depois, mostra no painel extra
+            if (dados.decisaoEventoDepois && dados.eventoAtualInfo) {
+                eventoAtual = dados.eventoAtualInfo;
+                setTimeout(() => {
+                    mostrarInterfaceEvento(dados.eventoAtualInfo);
+                }, 500);
+            }
+            break;
+
         case 'EM_JOGO':
             estadoAtual = dados;
             atualizarMesa(dados);
@@ -320,11 +355,23 @@ function atualizarPlacar(estado) {
 // FASE DE DECISÃO
 // =============================================
 function mostrarFaseDecisao(dados) {
+    // Verifica se o jogador atual está eliminado
+    const eliminados = dados.jogadoresEliminados || [];
+    if (eliminados.includes(usernameAtual)) {
+        // Jogador eliminado — mostra como espectador
+        document.getElementById('painel-decisao').classList.add('escondido');
+        mostrarMensagemFlutuante('☠️ Você foi eliminado. Modo espectador ativado.');
+        document.getElementById('info-fase').textContent = '☠️ Espectador';
+        return;
+    }
+
     moedasTributo = 0;
     moedasBem = 0;
     totalMoedas = dados.moedasDaRodada || 5;
     atualizarContadores();
     document.getElementById('painel-decisao').classList.remove('escondido');
+    document.getElementById('btn-confirmar').disabled = false;
+    document.getElementById('btn-confirmar').textContent = 'Confirmar';
     document.getElementById('info-fase').textContent = 'Decidindo';
     document.getElementById('info-fase').className = 'badge-fase fase-decisao';
 }
@@ -369,8 +416,6 @@ let intervaloDiscussao = null;
 
 function mostrarFaseDiscussao(dados) {
     document.getElementById('painel-decisao').classList.add('escondido');
-    document.getElementById('btn-confirmar').disabled = false;
-    document.getElementById('btn-confirmar').textContent = 'Confirmar';
     document.getElementById('info-fase').textContent = '💬 Discussão';
     document.getElementById('info-fase').className = 'badge-fase fase-discussao';
 
@@ -384,12 +429,52 @@ function mostrarFaseDiscussao(dados) {
 
     const tempoTotal = dados.tempoDiscussao || 30;
     let segundosRestantes = tempoTotal;
-    let jaVotou = false;
+
+    // Verifica explicitamente se pode votar
+    const podeVotar = dados.podeVotar === true;
 
     const jogadoresOpcoes = Object.keys(dados.contasPessoais || {})
-        .filter(n => n !== usernameAtual)
+        .filter(n => n !== usernameAtual &&
+            !(dados.jogadoresEliminados || []).includes(n))
         .map(n => `<option value="${n}" style="color:black">${n}</option>`)
         .join('');
+
+    const rodadeMetade = Math.floor((dados.totalRodadas || 0) / 2) + 1;
+
+    const votacaoHtml = podeVotar
+        ? `<div id="painel-votacao-individual" style="margin-top:12px;">
+            <p style="color:var(--texto-fraco); font-size:0.85rem;
+                margin-bottom:8px;">
+                Escolha um jogador para eliminar:
+            </p>
+            <select id="select-eliminar"
+                style="width:100%; padding:10px; margin-bottom:8px;
+                background:white; color:black; border-radius:8px;
+                font-size:0.95rem; border:none;">
+                <option value="" style="color:black">
+                    Escolha quem eliminar...
+                </option>
+                ${jogadoresOpcoes}
+            </select>
+            <div style="display:flex; gap:8px;">
+                <button class="btn-principal" id="btn-votar-eliminar"
+                    onclick="votarEliminar()"
+                    style="flex:2; background:var(--perigo);">
+                    🗳️ Votar para Eliminar
+                </button>
+                <button class="btn-principal" id="btn-pular-voto"
+                    onclick="pularVoto()"
+                    style="flex:1; background:rgba(255,255,255,0.15);
+                    color:var(--texto);">
+                    ⏭️ Pular
+                </button>
+            </div>
+           </div>`
+        : `<p style="color:var(--texto-fraco); text-align:center;
+              font-size:0.82rem; margin-top:12px; padding:10px;
+              background:rgba(255,255,255,0.05); border-radius:8px;">
+              🔒 Votação disponível a partir da rodada ${rodadeMetade}
+           </p>`;
 
     const painel = document.createElement('div');
     painel.id = 'painel-discussao';
@@ -400,41 +485,15 @@ function mostrarFaseDiscussao(dados) {
             <div class="contagem-regressiva" id="contagem-discussao">
                 ${tempoTotal}
             </div>
-            <p style="color:var(--texto-fraco); text-align:center; margin:8px 0;">
-                Discutam entre si e votem para eliminar um jogador.
+            <p style="color:var(--texto-fraco); text-align:center;
+                margin:8px 0; font-size:0.9rem;">
+                ${dados.mensagem || 'Discutam entre si!'}
             </p>
-            <div id="painel-votacao-individual">
-                <select id="select-eliminar"
-                    style="width:100%; padding:10px; margin-bottom:8px;
-                    background:white; color:black;
-                    border:1px solid rgba(255,255,255,0.15);
-                    border-radius:8px; font-size:0.95rem;">
-                    <option value="" style="color:black">
-                        Escolha quem eliminar...
-                    </option>
-                    ${jogadoresOpcoes}
-                </select>
-                <div style="display:flex; gap:8px;">
-                    <button class="btn-principal" id="btn-votar-eliminar"
-                        onclick="votarEliminar()"
-                        style="flex:2; background:var(--perigo);">
-                        🗳️ Votar para Eliminar
-                    </button>
-                    <button class="btn-principal" id="btn-pular-voto"
-                        onclick="pularVoto()"
-                        style="flex:1; background:rgba(255,255,255,0.15);
-                        color:var(--texto);">
-                        ⏭️ Pular
-                    </button>
-                </div>
-                <div id="contagem-votos" style="margin-top:10px;
-                    font-size:0.8rem; color:var(--texto-fraco);"></div>
-            </div>
+            ${votacaoHtml}
         </div>
     `;
     document.body.appendChild(painel);
 
-    // Contagem regressiva local
     intervaloDiscussao = setInterval(() => {
         segundosRestantes--;
         const el = document.getElementById('contagem-discussao');
@@ -450,33 +509,6 @@ function mostrarFaseDiscussao(dados) {
             if (p) p.remove();
         }
     }, 1000);
-
-    const podeVotar = dados.podeVotar === true;
-
-    const votacaoHtml = podeVotar ? `
-        <select id="select-eliminar"
-            style="width:100%; padding:10px; margin-bottom:8px;
-            background:white; color:black;
-            border-radius:8px; font-size:0.95rem;">
-            <option value="" style="color:black">Escolha quem eliminar...</option>
-            ${jogadoresOpcoes}
-        </select>
-        <div style="display:flex; gap:8px;">
-            <button class="btn-principal" id="btn-votar-eliminar"
-                onclick="votarEliminar()"
-                style="flex:2; background:var(--perigo);">
-                🗳️ Votar para Eliminar
-            </button>
-            <button class="btn-principal" id="btn-pular-voto"
-                onclick="pularVoto()"
-                style="flex:1; background:rgba(255,255,255,0.15); color:var(--texto);">
-                ⏭️ Pular
-            </button>
-        </div>
-    ` : `<p style="color:var(--texto-fraco); text-align:center; font-size:0.85rem;">
-        🔒 Votação disponível após a metade do jogo
-        (rodada ${Math.floor((estadoAtual.totalRodadas || 0) / 2) + 1}).
-        </p>`;
 }
 
 async function votarEliminar() {
@@ -668,33 +700,54 @@ function mostrarEvento(evento) {
     }, 8000);
 }
 
+
+function obterEmojiEvento(tipo) {
+    const emojis = {
+        ROUBO: '💰', VENENO: '🧪', PARCEIROS: '🤝',
+        ROLETA: '🎰', DUPLICATA: '✌️', EXPOSICAO: '🔍',
+        LIDERANCA: '👑', OSMOSE: '🧂', TRAICAO: '🔪',
+        COPIA: '📄', BOLHA: '🫧', BOMBA_RELOGIO: '💣',
+        IGUALDADE: '🟰', FOGUEIRA: '🔥'
+    };
+    return emojis[tipo] || '⚡';
+}
+
+
 function fecharEvento() {
     document.getElementById('overlay-evento').classList.add('escondido');
     document.getElementById('evento-animacao').innerHTML = '';
 }
 
 function dispararAnimacaoEvento(tipo) {
-    const c = document.getElementById('evento-animacao');
-    c.innerHTML = '';
-    const animacoes = {
-        ROUBO:        () => animacaoCedulasCaindo(c),
-        VENENO:       () => animacaoCaveirasSubindo(c),
-        PARCEIROS:    () => animacaoBrilhoAmarelo(c),
-        ROLETA:       () => animacaoSetasRoleta(c),
-        DUPLICATA:    () => animacaoCachoeiraMoedas(c),
-        EXPOSICAO:    () => animacaoZoom(c),
-        LIDERANCA:    () => animacaoCoroacao(c),
-        OSMOSE:       () => animacaoEspadasX(c),
-        TRAICAO:      () => animacaoFacaGirando(c),
-        COPIA:        () => animacaoPrintTela(c),
-        BOLHA:        () => animacaoBolhasEstourando(c),
-        BOMBA_RELOGIO:() => animacaoExplosao(c),
-        IGUALDADE:    () => animacaoMatematica(c),
-        FOGUEIRA:     () => animacaoFogo(c),
-    };
-    if (animacoes[tipo]) animacoes[tipo]();
-}
+    // Garante que o container existe
+    let container = document.getElementById('evento-animacao');
+    if (!container) return;
+    container.innerHTML = '';
 
+    // Pequeno delay para garantir que o overlay está visível
+    setTimeout(() => {
+        const animacoes = {
+            ROUBO:         () => animacaoCedulasCaindo(container),
+            VENENO:        () => animacaoCaveirasSubindo(container),
+            PARCEIROS:     () => animacaoBrilhoAmarelo(container),
+            ROLETA:        () => animacaoSetasRoleta(container),
+            DUPLICATA:     () => animacaoCachoeiraMoedas(container),
+            EXPOSICAO:     () => animacaoZoom(container),
+            LIDERANCA:     () => animacaoCoroacao(container),
+            OSMOSE:        () => animacaoEspadasX(container),
+            TRAICAO:       () => animacaoFacaGirando(container),
+            COPIA:         () => animacaoPrintTela(container),
+            BOLHA:         () => animacaoBolhasEstourando(container),
+            BOMBA_RELOGIO: () => animacaoExplosao(container),
+            IGUALDADE:     () => animacaoMatematica(container),
+            FOGUEIRA:      () => animacaoFogo(container),
+        };
+        if (animacoes[tipo]) {
+            animacoes[tipo]();
+            console.log('Animação disparada:', tipo);
+        }
+    }, 100);
+}
 // =============================================
 // ANIMAÇÕES
 // =============================================
@@ -826,50 +879,48 @@ function animacaoFogo(c) {
 // Dados do evento atual
 let eventoAtual = null;
 
-function mostrarInterfaceEvento(evento) {
+function mostrarInterfaceEvento(evento, containerOverride) {
     eventoAtual = evento;
-    const painel = document.getElementById('painel-evento-extra');
+    const painel = containerOverride ||
+        document.getElementById('painel-evento-extra');
+    if (!painel) return;
     painel.innerHTML = '';
-    painel.classList.remove('escondido');
+    if (!containerOverride) painel.classList.remove('escondido');
 
     switch(evento.tipo) {
-        case 'ROUBO':
-            mostrarInterfaceRoubo(evento, painel);
-            break;
-        case 'VENENO':
-            mostrarInterfaceVeneno(evento, painel);
-            break;
-        case 'PARCEIROS':
-            mostrarInterfaceParceiros(evento, painel);
-            break;
-        case 'ROLETA':
-            mostrarInterfaceRoleta(evento, painel);
-            break;
-        case 'DUPLICATA':
-            mostrarInterfaceDuplicata(evento, painel);
-            break;
-        case 'EXPOSICAO':
-            mostrarInterfaceExposicao(evento, painel);
-            break;
-        case 'LIDERANCA':
-            mostrarInterfaceLideranca(evento, painel);
-            break;
-        case 'OSMOSE':
-            mostrarInterfaceOsmose(evento, painel);
-            break;
-        case 'TRAICAO':
-            mostrarInterfaceTraicao(evento, painel);
-            break;
-        case 'COPIA':
-            mostrarInterfaceCopia(evento, painel);
-            break;
-        case 'IGUALDADE':
-            mostrarInterfaceIgualdade(evento, painel);
-            break;
-        case 'BOMBA_RELOGIO':
-            mostrarInterfaceBomba(evento, painel);
-            break;
+        case 'ROUBO':         mostrarInterfaceRoubo(evento, painel); break;
+        case 'VENENO':        mostrarInterfaceVeneno(evento, painel); break;
+        case 'PARCEIROS':     mostrarInterfaceParceiros(evento, painel); break;
+        case 'ROLETA':        mostrarInterfaceRoleta(evento, painel); break;
+        case 'DUPLICATA':     mostrarInterfaceDuplicata(evento, painel); break;
+        case 'EXPOSICAO':     mostrarInterfaceExposicao(evento, painel); break;
+        case 'LIDERANCA':     mostrarInterfaceLideranca(evento, painel); break;
+        case 'OSMOSE':        mostrarInterfaceOsmose(evento, painel); break;
+        case 'TRAICAO':       mostrarInterfaceTraicao(evento, painel); break;
+        case 'COPIA':         mostrarInterfaceCopia(evento, painel); break;
+        case 'IGUALDADE':     mostrarInterfaceIgualdade(evento, painel); break;
+        case 'BOMBA_RELOGIO': mostrarInterfaceBomba(evento, painel); break;
     }
+}
+
+function mostrarInterfaceEventoAntes(evento) {
+    // Remove painel anterior
+    const painelExistente = document.getElementById('painel-evento-antes');
+    if (painelExistente) painelExistente.remove();
+
+    const painel = document.createElement('div');
+    painel.id = 'painel-evento-antes';
+    painel.className = 'painel-decisao';
+    painel.innerHTML = `
+        <div class="decisao-card">
+            <h3>${obterEmojiEvento(evento.tipo)} Decisão do Evento</h3>
+            <div id="conteudo-evento-antes"></div>
+        </div>
+    `;
+    document.body.appendChild(painel);
+
+    const conteudo = document.getElementById('conteudo-evento-antes');
+    mostrarInterfaceEvento(evento, conteudo);
 }
 
 // =============================================

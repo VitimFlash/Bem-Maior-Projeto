@@ -23,6 +23,7 @@ public class SalaController {
     @Autowired private SimpMessagingTemplate mensageiro;
     @Autowired private JogoService jogoService;
     @Autowired private JogadorRepository jogadorRepository;
+    @Autowired private JogoController jogoController;
 
     @PostMapping("/criar")
     public ResponseEntity<?> criar(@RequestBody Map<String, Integer> body,
@@ -67,23 +68,27 @@ public class SalaController {
     public ResponseEntity<?> iniciar(@RequestBody Map<String, String> body,
                                      Authentication auth) {
         System.out.println("=== INICIANDO JOGO ===");
-        System.out.println("Codigo: " + body.get("codigo"));
-        System.out.println("Usuario: " + auth.getName());
         try {
             String codigo = body.get("codigo");
             Sala sala = salaService.iniciarJogo(codigo);
 
-            // Notifica todos que o jogo começou
+            // Notifica todos
             MensagemSala msgInicio = new MensagemSala();
             msgInicio.tipo = "JOGO_INICIADO";
             msgInicio.codigoSala = sala.getCodigo();
             mensageiro.convertAndSend("/topic/sala/" + sala.getCodigo(), msgInicio);
 
-            // Inicia primeira rodada imediatamente
-            EstadoSala estadoInicial = jogoService.iniciarRodadaERetornarEstado(codigo);
-            estadoInicial.setFase("DECISAO");
-            estadoInicial.setMensagem("Rodada 1 iniciada! Faça sua escolha.");
-            mensageiro.convertAndSend("/topic/sala/" + codigo, estadoInicial);
+            // Inicia fluxo em thread separada
+            // (discussão → evento se houver → decisão)
+            String codigoFinal = codigo;
+            new Thread(() -> {
+                try {
+                    Thread.sleep(1000); // pequena pausa para todos conectarem
+                    jogoController.iniciarNovaRodada(codigoFinal);
+                } catch (Exception e) {
+                    System.err.println("Erro ao iniciar rodada: " + e.getMessage());
+                }
+            }).start();
 
             return ResponseEntity.ok("Jogo iniciado!");
         } catch (RuntimeException e) {
@@ -137,7 +142,6 @@ public class SalaController {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
-
     // Endpoint de diagnóstico — remover depois
     @GetMapping("/debug/{codigo}")
     public ResponseEntity<?> debug(@PathVariable String codigo) {
