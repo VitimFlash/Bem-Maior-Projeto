@@ -9,6 +9,10 @@ let moedasBem = 0;
 let totalMoedas = 5;
 let stompClient = null;
 let idVotacaoAtiva = null;
+let jaConfirmouDecisao = false;
+let jaMostrouDecisaoEvento = false;
+let eventoAtual = null;
+let intervaloDiscussao = null;
 
 // =============================================
 // INICIALIZAÇÃO
@@ -19,8 +23,6 @@ async function init() {
     const usuario = await resp.json();
     usernameAtual = usuario.username;
     document.getElementById('nome-usuario').textContent = usernameAtual;
-
-    // Conecta WebSocket primeiro
     conectarWebSocket();
 }
 
@@ -29,8 +31,7 @@ function conectarWebSocket() {
     stompClient = Stomp.over(socket);
     stompClient.debug = null;
 
-    stompClient.connect({}, 
-        // Sucesso
+    stompClient.connect({},
         () => {
             console.log('WebSocket conectado!');
             document.getElementById('info-fase').textContent = 'Conectado';
@@ -41,35 +42,34 @@ function conectarWebSocket() {
             });
 
             stompClient.subscribe('/user/queue/estado-jogador', (msg) => {
-                console.log('Mensagem jogador:', msg.body);
                 tratarEstadoJogador(JSON.parse(msg.body));
             });
 
-            // Canal personalizado de evento por jogador
-           stompClient.subscribe('/user/queue/estado-jogador-evento', (msg) => {
+            stompClient.subscribe('/user/queue/estado-jogador-evento', (msg) => {
                 const dados = JSON.parse(msg.body);
                 console.log('Evento personalizado:', dados);
+
+                if (dados.fase === 'LIDERANCA_DISTRIBUIR') {
+                    mostrarInterfaceDistribuicaoLider(dados);
+                }
 
                 if (dados.fase === 'EVENTO' && dados.eventoAtualInfo) {
                     mostrarEvento(dados.eventoAtualInfo);
                 }
 
                 if (dados.fase === 'DECISAO_EVENTO_ANTES' && dados.eventoAtualInfo) {
-                    // Mostra interface do evento ANTES das moedas
                     document.getElementById('painel-decisao').classList.add('escondido');
                     eventoAtual = dados.eventoAtualInfo;
+                    eventoPendente = true;
                     mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
                 }
             });
 
-            // Busca estado atual após conectar
             buscarEstadoAtual();
         },
-        // Erro
         (erro) => {
             console.error('Erro WebSocket:', erro);
             document.getElementById('info-fase').textContent = 'Reconectando...';
-            // Tenta reconectar após 3 segundos
             setTimeout(conectarWebSocket, 3000);
         }
     );
@@ -82,9 +82,6 @@ async function buscarEstadoAtual() {
             const dados = await resp.json();
             const estadoSala = dados.sala;
             const estadoJogador = dados.jogador;
-
-            console.log('Estado sala:', estadoSala);
-            console.log('Estado jogador:', estadoJogador);
 
             if (estadoSala && estadoSala.contasPessoais &&
                 Object.keys(estadoSala.contasPessoais).length > 0) {
@@ -100,21 +97,17 @@ async function buscarEstadoAtual() {
                         estadoSala.meta;
                 }
 
-                if (estadoSala.fase === 'DECISAO' ||
-                    estadoSala.fase === 'EM_JOGO') {
+                if (estadoSala.fase === 'DECISAO' || estadoSala.fase === 'EM_JOGO') {
                     mostrarFaseDecisao(estadoSala);
                 }
 
                 if (estadoJogador) {
                     totalMoedas = estadoJogador.moedasDaRodada || 5;
                 }
-
             } else {
-                console.log('Estado vazio, tentando novamente...');
                 setTimeout(buscarEstadoAtual, 2000);
             }
         } else {
-            console.log('Endpoint retornou:', resp.status);
             setTimeout(buscarEstadoAtual, 2000);
         }
     } catch(e) {
@@ -124,54 +117,127 @@ async function buscarEstadoAtual() {
 }
 
 // =============================================
-// TRATAMENTO DE MENSAGENS
+// TRATAMENTO DE MENSAGENS — SEM DUPLICATAS
 // =============================================
 function tratarMensagemSala(dados) {
-    console.log('Mensagem recebida:', dados);
-
     const tipo = dados.tipo || dados.fase;
 
     switch(tipo) {
         case 'JOGO_INICIADO':
-            // Jogo iniciado — aguarda o EstadoSala que vem logo depois
             mostrarMensagemFlutuante('Jogo iniciado!');
             break;
 
-        case 'DECISAO':
+        case 'DISCUSSAO':
+            // Reseta para nova rodada
+            jaConfirmouDecisao = false;
+            jaMostrouDecisaoEvento = false;
+            eventoAtual = null;
+
             estadoAtual = dados;
-            // Remove painel de evento antes se existir
-            const painelAntes = document.getElementById('painel-evento-antes');
-            if (painelAntes) painelAntes.remove();
-
             atualizarMesa(dados);
-            mostrarFaseDecisao(dados);
             atualizarInfoRodada(dados);
+            mostrarFaseDiscussao(dados);
+            break;
 
-            // Se tem evento que decide depois, mostra no painel extra
-            if (dados.decisaoEventoDepois && dados.eventoAtualInfo) {
-                eventoAtual = dados.eventoAtualInfo;
-                setTimeout(() => {
-                    mostrarInterfaceEvento(dados.eventoAtualInfo);
-                }, 500);
+        case 'RESULTADO_VOTACAO':
+            estadoAtual = dados;
+            atualizarMesa(dados);
+            mostrarMensagemFlutuante(dados.mensagem || '');
+            if (dados.jogadorEliminado) {
+                marcarJogadorEliminado(dados.jogadorEliminado);
             }
             break;
 
-        case 'EM_JOGO':
+        case 'EVENTO':
             estadoAtual = dados;
             atualizarMesa(dados);
-            mostrarFaseDecisao(dados);
             atualizarInfoRodada(dados);
+            if (dados.eventoAtualInfo) {
+                mostrarEvento(dados.eventoAtualInfo);
+            }
             break;
 
+        case 'DECISAO':
+        case 'EM_JOGO':
+            estadoAtual = dados;
+
+            // Remove painéis anteriores
+            const painelAntes = document.getElementById('painel-evento-antes');
+            if (painelAntes) painelAntes.remove();
+
+            const painelDisc = document.getElementById('painel-discussao');
+            if (painelDisc) painelDisc.remove();
+
+            if (intervaloDiscussao) {
+                clearInterval(intervaloDiscussao);
+                intervaloDiscussao = null;
+            }
+
+            atualizarMesa(dados);
+            atualizarInfoRodada(dados);
+
+            // Só mostra painel se ainda não confirmou
+            if (!jaConfirmouDecisao) {
+                mostrarFaseDecisao(dados);
+            }
+
+            // Evento após decisão
+            if (dados.decisaoEventoDepois && dados.eventoAtualInfo && !jaMostrouDecisaoEvento) {
+                jaMostrouDecisaoEvento = true;
+                eventoAtual = dados.eventoAtualInfo;
+                setTimeout(() => mostrarInterfaceEvento(dados.eventoAtualInfo), 500);
+            }
+            break;
+
+        case 'LIDERANCA_VOTOS':
+            atualizarPlacarLideranca(dados.votos);
+        break;
+
+        case 'LIDER_ELEITO':
+            mostrarMensagemFlutuante('👑 ' + dados.lider + ' é o Líder!');
+            // Esconde painel de votação para não-líderes
+            const painelLider = document.getElementById('painel-evento-antes');
+            if (painelLider) {
+                  painelLider.innerHTML = `
+                       <div class="decisao-card">
+                          <h3>👑 Líder Eleito!</h3>
+                           <p style="text-align:center; color:var(--destaque); font-size:1.2rem;">
+                              ${dados.lider} é o Líder desta rodada!
+                         </p>
+                         <p style="color:var(--texto-fraco); text-align:center;">
+                             Aguardando o líder distribuir as moedas...
+                         </p>
+                     </div>
+                 `;
+            }
+            break;
+        case 'RESULTADO_EVENTO':
+             mostrarResultadoEvento(dados);
+            break;
         case 'REVELACAO':
+            // Reseta TUDO para próxima rodada
+            jaConfirmouDecisao = false;
+            jaMostrouDecisaoEvento = false;
+            eventoAtual = null;
+
             estadoAtual = dados;
             atualizarMesa(dados);
             mostrarRevelacao(dados);
             atualizarInfoRodada(dados);
-            break;
 
-        case 'EVENTO':
-            mostrarEvento(dados.evento);
+            document.getElementById('painel-decisao').classList.add('escondido');
+
+            const painelAntesRev = document.getElementById('painel-evento-antes');
+            if (painelAntesRev) painelAntesRev.remove();
+
+            const painelDiscRev = document.getElementById('painel-discussao');
+            if (painelDiscRev) painelDiscRev.remove();
+
+            const painelExtra = document.getElementById('painel-evento-extra');
+            if (painelExtra) {
+                painelExtra.innerHTML = '';
+                painelExtra.classList.add('escondido');
+            }
             break;
 
         case 'VOTACAO_ABERTA':
@@ -192,50 +258,13 @@ function tratarMensagemSala(dados) {
             window.location.href = '/resultado.html?sala=' + codigoSala;
             break;
 
-        case 'DISCUSSAO':
-            estadoAtual = dados;
-            atualizarMesa(dados);
-            atualizarInfoRodada(dados);
-            // Só mostra opção de votar se podeVotar for true
-            mostrarFaseDiscussao(dados);
-            break;
-
-        case 'RESULTADO_VOTACAO':
-            estadoAtual = dados;
-            // Atualiza mesa — jogador eliminado ficará transparente
-            atualizarMesa(dados);
-            mostrarMensagemFlutuante(dados.mensagem || '');
-            if (dados.jogadorEliminado) {
-                marcarJogadorEliminado(dados.jogadorEliminado);
-            }
-            break;
-
-        case 'EVENTO':
-            estadoAtual = dados;
-            atualizarMesa(dados);
-            atualizarInfoRodada(dados);
-            if (dados.eventoAtualInfo) {
-                mostrarEvento(dados.eventoAtualInfo);
-            }
-            break;
-
-        case 'REVELACAO':
-            estadoAtual = dados;
-            atualizarMesa(dados);
-            mostrarRevelacao(dados);
-            atualizarInfoRodada(dados);
-            // Esconde painel de decisão
-            document.getElementById('painel-decisao').classList.add('escondido');
-            break;
-
         default:
-            // Tenta tratar como EstadoSala genérico
             if (dados.contasPessoais) {
                 estadoAtual = dados;
                 atualizarMesa(dados);
                 atualizarInfoRodada(dados);
                 if (dados.fase === 'DECISAO' || dados.fase === 'EM_JOGO') {
-                    mostrarFaseDecisao(dados);
+                    if (!jaConfirmouDecisao) mostrarFaseDecisao(dados);
                 }
             }
             break;
@@ -246,6 +275,10 @@ function tratarMensagemSala(dados) {
         document.getElementById('meta-valor').textContent = dados.meta + ' 🪙';
         document.getElementById('meta-placar-valor').textContent = dados.meta;
     }
+    if (dados.rodadaAtual) {
+        document.getElementById('info-rodada').textContent =
+            'Rodada ' + dados.rodadaAtual + '/' + dados.totalRodadas;
+    }
 }
 
 function atualizarInfoRodada(dados) {
@@ -255,12 +288,9 @@ function atualizarInfoRodada(dados) {
     }
     if (dados.fase) {
         const fases = {
-            'DECISAO': 'Decidindo',
-            'EM_JOGO': 'Decidindo',
-            'REVELACAO': 'Revelação',
-            'VOTACAO': 'Votação',
-            'EVENTO': 'Evento',
-            'FIM': 'Fim de Jogo'
+            'DECISAO': 'Decidindo', 'EM_JOGO': 'Decidindo',
+            'REVELACAO': 'Revelação', 'VOTACAO': 'Votação',
+            'EVENTO': 'Evento', 'DISCUSSAO': 'Discussão', 'FIM': 'Fim de Jogo'
         };
         document.getElementById('info-fase').textContent =
             fases[dados.fase] || dados.fase;
@@ -301,12 +331,11 @@ function atualizarMesa(estado) {
 
         card.innerHTML = `
             <div class="jogador-avatar"
-                style="${eliminado ? 'background:var(--perigo); opacity:0.5' : ''}">
+                style="${eliminado ? 'background:var(--perigo);opacity:0.5' : ''}">
                 ${nome.charAt(0).toUpperCase()}
             </div>
             <div class="jogador-nome">
-                ${nome}${souEu ? ' (você)' : ''}
-                ${eliminado ? ' ☠️' : ''}
+                ${nome}${souEu ? ' (você)' : ''}${eliminado ? ' ☠️' : ''}
             </div>
             <div class="jogador-conta">
                 💰 ${todasContas[nome]} moedas
@@ -323,9 +352,7 @@ function atualizarMesa(estado) {
 
 function marcarJogadorEliminado(nomeJogador) {
     const card = document.getElementById('jogador-' + nomeJogador);
-    if (card) {
-        card.classList.add('eliminado-permanente');
-    }
+    if (card) card.classList.add('eliminado-permanente');
 }
 
 // =============================================
@@ -355,15 +382,20 @@ function atualizarPlacar(estado) {
 // FASE DE DECISÃO
 // =============================================
 function mostrarFaseDecisao(dados) {
-    // Verifica se o jogador atual está eliminado
+    // Se há evento pendente, não mostra decisão ainda
+    if (eventoPendente) {
+        console.log('Evento pendente — aguardando conclusão antes da decisão');
+        return;
+    }
     const eliminados = dados.jogadoresEliminados || [];
     if (eliminados.includes(usernameAtual)) {
-        // Jogador eliminado — mostra como espectador
         document.getElementById('painel-decisao').classList.add('escondido');
         mostrarMensagemFlutuante('☠️ Você foi eliminado. Modo espectador ativado.');
         document.getElementById('info-fase').textContent = '☠️ Espectador';
         return;
     }
+
+    if (jaConfirmouDecisao) return;
 
     moedasTributo = 0;
     moedasBem = 0;
@@ -374,6 +406,12 @@ function mostrarFaseDecisao(dados) {
     document.getElementById('btn-confirmar').textContent = 'Confirmar';
     document.getElementById('info-fase').textContent = 'Decidindo';
     document.getElementById('info-fase').className = 'badge-fase fase-decisao';
+
+    if (dados.decisaoEventoDepois && dados.eventoAtualInfo && !jaMostrouDecisaoEvento) {
+        jaMostrouDecisaoEvento = true;
+        eventoAtual = dados.eventoAtualInfo;
+        setTimeout(() => mostrarInterfaceEvento(dados.eventoAtualInfo), 500);
+    }
 }
 
 function ajustarMoeda(tipo, delta) {
@@ -403,17 +441,20 @@ async function confirmarDecisao() {
             'Distribua todas as ' + totalMoedas + ' moedas!';
         return;
     }
+
     stompClient.send('/app/jogo/' + codigoSala + '/decisao', {},
         JSON.stringify({ moedasTributo, moedasBemPessoal: moedasBem })
     );
+
+    jaConfirmouDecisao = true;
     document.getElementById('btn-confirmar').disabled = true;
-    document.getElementById('btn-confirmar').textContent = 'Aguardando...';
+    document.getElementById('btn-confirmar').textContent = '✅ Aguardando...';
     document.getElementById('decisao-erro').textContent = '';
 }
 
+// =============================================
 // FASE DISCUSSÃO
-let intervaloDiscussao = null;
-
+// =============================================
 function mostrarFaseDiscussao(dados) {
     document.getElementById('painel-decisao').classList.add('escondido');
     document.getElementById('info-fase').textContent = '💬 Discussão';
@@ -429,8 +470,6 @@ function mostrarFaseDiscussao(dados) {
 
     const tempoTotal = dados.tempoDiscussao || 30;
     let segundosRestantes = tempoTotal;
-
-    // Verifica explicitamente se pode votar
     const podeVotar = dados.podeVotar === true;
 
     const jogadoresOpcoes = Object.keys(dados.contasPessoais || {})
@@ -442,37 +481,33 @@ function mostrarFaseDiscussao(dados) {
     const rodadeMetade = Math.floor((dados.totalRodadas || 0) / 2) + 1;
 
     const votacaoHtml = podeVotar
-        ? `<div id="painel-votacao-individual" style="margin-top:12px;">
-            <p style="color:var(--texto-fraco); font-size:0.85rem;
-                margin-bottom:8px;">
+        ? `<div style="margin-top:12px;">
+            <p style="color:var(--texto-fraco);font-size:0.85rem;margin-bottom:8px;">
                 Escolha um jogador para eliminar:
             </p>
             <select id="select-eliminar"
-                style="width:100%; padding:10px; margin-bottom:8px;
-                background:white; color:black; border-radius:8px;
-                font-size:0.95rem; border:none;">
-                <option value="" style="color:black">
-                    Escolha quem eliminar...
-                </option>
+                style="width:100%;padding:10px;margin-bottom:8px;
+                background:white;color:black;border-radius:8px;
+                font-size:0.95rem;border:none;">
+                <option value="" style="color:black">Escolha quem eliminar...</option>
                 ${jogadoresOpcoes}
             </select>
-            <div style="display:flex; gap:8px;">
+            <div style="display:flex;gap:8px;">
                 <button class="btn-principal" id="btn-votar-eliminar"
                     onclick="votarEliminar()"
-                    style="flex:2; background:var(--perigo);">
+                    style="flex:2;background:var(--perigo);">
                     🗳️ Votar para Eliminar
                 </button>
                 <button class="btn-principal" id="btn-pular-voto"
                     onclick="pularVoto()"
-                    style="flex:1; background:rgba(255,255,255,0.15);
-                    color:var(--texto);">
+                    style="flex:1;background:rgba(255,255,255,0.15);color:var(--texto);">
                     ⏭️ Pular
                 </button>
             </div>
            </div>`
-        : `<p style="color:var(--texto-fraco); text-align:center;
-              font-size:0.82rem; margin-top:12px; padding:10px;
-              background:rgba(255,255,255,0.05); border-radius:8px;">
+        : `<p style="color:var(--texto-fraco);text-align:center;
+              font-size:0.82rem;margin-top:12px;padding:10px;
+              background:rgba(255,255,255,0.05);border-radius:8px;">
               🔒 Votação disponível a partir da rodada ${rodadeMetade}
            </p>`;
 
@@ -482,11 +517,8 @@ function mostrarFaseDiscussao(dados) {
     painel.innerHTML = `
         <div class="decisao-card">
             <h3>💬 Tempo de Discussão</h3>
-            <div class="contagem-regressiva" id="contagem-discussao">
-                ${tempoTotal}
-            </div>
-            <p style="color:var(--texto-fraco); text-align:center;
-                margin:8px 0; font-size:0.9rem;">
+            <div class="contagem-regressiva" id="contagem-discussao">${tempoTotal}</div>
+            <p style="color:var(--texto-fraco);text-align:center;margin:8px 0;font-size:0.9rem;">
                 ${dados.mensagem || 'Discutam entre si!'}
             </p>
             ${votacaoHtml}
@@ -514,10 +546,7 @@ function mostrarFaseDiscussao(dados) {
 async function votarEliminar() {
     const select = document.getElementById('select-eliminar');
     const alvo = select ? select.value : '';
-    if (!alvo) {
-        mostrarMensagemFlutuante('Selecione um jogador!');
-        return;
-    }
+    if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     await registrarVoto(alvo);
 }
 
@@ -533,7 +562,6 @@ async function registrarVoto(alvo) {
             body: JSON.stringify({ codigoSala, alvo })
         });
 
-        // Desabilita botões após votar
         const btnVotar = document.getElementById('btn-votar-eliminar');
         const btnPular = document.getElementById('btn-pular-voto');
         const select = document.getElementById('select-eliminar');
@@ -549,95 +577,162 @@ async function registrarVoto(alvo) {
     }
 }
 
-function mostrarPainelDiscussao(segundos, dados) {
-    // Remove painel anterior se existir
-    const painelExistente = document.getElementById('painel-discussao');
+function mostrarInterfaceDistribuicaoLider(dados) {
+    const painelExistente = document.getElementById('painel-evento-antes');
     if (painelExistente) painelExistente.remove();
 
+    const jogadores = Object.keys(dados.contasPessoais || {});
+    const totalMoedasLider = jogadores.length * 5; // cada jogador tinha 5
+
+    const linhasJogadores = jogadores.map(nome => `
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+            <span style="flex:1; color:var(--texto);">${nome}</span>
+            <div style="display:flex; align-items:center; gap:4px;">
+                <label style="font-size:0.8rem; color:var(--texto-fraco);">Tributo:</label>
+                <input type="number" id="tributo-${nome}" min="0" value="0"
+                    style="width:50px; padding:4px; background:rgba(255,255,255,0.1);
+                    border:1px solid rgba(255,255,255,0.2); border-radius:4px;
+                    color:var(--texto); text-align:center;"
+                    onchange="atualizarTotalLider()"/>
+                <label style="font-size:0.8rem; color:var(--texto-fraco);">Bem:</label>
+                <input type="number" id="bem-${nome}" min="0" value="0"
+                    style="width:50px; padding:4px; background:rgba(255,255,255,0.1);
+                    border:1px solid rgba(255,255,255,0.2); border-radius:4px;
+                    color:var(--texto); text-align:center;"
+                    onchange="atualizarTotalLider()"/>
+            </div>
+        </div>
+    `).join('');
+
     const painel = document.createElement('div');
-    painel.id = 'painel-discussao';
+    painel.id = 'painel-evento-antes';
     painel.className = 'painel-decisao';
     painel.innerHTML = `
         <div class="decisao-card">
-            <h3>💬 Tempo de Discussão</h3>
-            <div class="contagem-regressiva" id="contagem">
-                ${segundos}
-            </div>
-            <p style="color: var(--texto-fraco); text-align:center; margin: 12px 0;">
-                Discutam entre si! Você pode votar para eliminar um jogador.
+            <h3>👑 Você é o Líder! Distribua as moedas</h3>
+            <p style="color:var(--texto-fraco); font-size:0.85rem; margin-bottom:12px;">
+                Total disponível: <strong id="total-lider">${totalMoedasLider}</strong> moedas
+                | Distribuídas: <strong id="distribuidas-lider">0</strong>
             </p>
-            ${dados.podeVotar ? `
-            <div style="margin-top: 12px;">
-                <select id="select-votar" style="width:100%; padding:10px;
-                    background: rgba(255,255,255,0.07);
-                    border: 1px solid rgba(255,255,255,0.15);
-                    border-radius: 8px; color: var(--texto); margin-bottom: 8px;">
-                    <option value="">Selecione um jogador para votar...</option>
-                    ${Object.keys(dados.contasPessoais || {})
-                        .filter(n => n !== usernameAtual)
-                        .map(n => `<option value="${n}">${n}</option>`)
-                        .join('')}
-                </select>
-                <button class="btn-principal" onclick="abrirVotacaoContraSelecionado()"
-                    style="background: var(--perigo);">
-                    🗳️ Iniciar Votação
-                </button>
-            </div>` : ''}
+            ${linhasJogadores}
+            <button class="btn-principal" onclick="confirmarDistribuicaoLider()"
+                style="margin-top:12px;">
+                👑 Confirmar Distribuição
+            </button>
+            <p id="erro-lider" class="mensagem-erro"></p>
         </div>
     `;
     document.body.appendChild(painel);
 
-    // Atualiza contagem visualmente
-    const el = document.getElementById('contagem');
-    if (el && segundos > 0) {
-        el.textContent = segundos;
-        // Muda cor quando estiver acabando
-        if (segundos <= 10) el.style.color = 'var(--perigo)';
-        else if (segundos <= 20) el.style.color = 'var(--destaque)';
-        else el.style.color = 'var(--sucesso)';
-    }
+    window._jogadoresLider = jogadores;
+    window._totalMoedasLider = totalMoedasLider;
+}
 
-    // Remove painel quando fase mudar
-    if (segundos === 0) {
-        setTimeout(() => {
-            const p = document.getElementById('painel-discussao');
-            if (p) p.remove();
-        }, 1000);
+function atualizarTotalLider() {
+    const jogadores = window._jogadoresLider || [];
+    let total = 0;
+    jogadores.forEach(nome => {
+        total += parseInt(document.getElementById('tributo-' + nome)?.value || 0);
+        total += parseInt(document.getElementById('bem-' + nome)?.value || 0);
+    });
+    const el = document.getElementById('distribuidas-lider');
+    if (el) {
+        el.textContent = total;
+        el.style.color = total === window._totalMoedasLider
+            ? 'var(--sucesso)' : 'var(--perigo)';
     }
 }
 
-async function abrirVotacaoContra(nomeJogador) {
-    try {
-        // Busca jogadores da sala para achar o ID
-        const resp = await fetch('/sala/' + codigoSala + '/jogadores-detalhes');
-        if (!resp.ok) {
-            mostrarMensagemFlutuante('Erro ao abrir votação!');
-            return;
-        }
-        const jogadores = await resp.json();
-        const alvo = jogadores.find(j => j.username === nomeJogador);
+async function confirmarDistribuicaoLider() {
+    const jogadores = window._jogadoresLider || [];
+    const total = window._totalMoedasLider || 0;
 
-        if (!alvo) {
-            mostrarMensagemFlutuante('Jogador não encontrado!');
-            return;
-        }
+    let distribuicao = {};
+    let soma = 0;
 
-        const respVotacao = await fetch('/votacao/abrir', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                codigoSala: codigoSala,
-                idJogadorAlvo: alvo.id
-            })
-        });
+    jogadores.forEach(nome => {
+        const tributo = parseInt(document.getElementById('tributo-' + nome)?.value || 0);
+        const bem = parseInt(document.getElementById('bem-' + nome)?.value || 0);
+        distribuicao[nome] = { tributo, bemPessoal: bem };
+        soma += tributo + bem;
+    });
 
-        if (!respVotacao.ok) {
-            const erro = await respVotacao.text();
-            mostrarMensagemFlutuante(erro);
-        }
-    } catch(e) {
-        console.error('Erro ao abrir votação:', e);
+    if (soma !== total) {
+        document.getElementById('erro-lider').textContent =
+            `Distribua exatamente ${total} moedas! (${soma} distribuídas)`;
+        return;
     }
+
+    await fetch('/jogo/evento/lideranca/distribuir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codigoSala, distribuicao })
+    });
+
+    const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML = `
+        <div class="decisao-card">
+            <p class="evento-info-neutro">👑 Distribuição confirmada!</p>
+        </div>
+    `;
+}
+
+function mostrarResultadoEvento(dados) {
+    const overlayAnterior = document.getElementById('overlay-resultado-evento');
+    if (overlayAnterior) overlayAnterior.remove();
+
+    const isBolha = dados.nomeEvento === 'BOLHA';
+    const corFundo = isBolha
+        ? 'rgba(46,204,113,0.15)'
+        : 'rgba(231,76,60,0.15)';
+    const corBorda = isBolha ? 'var(--sucesso)' : 'var(--perigo)';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'overlay-resultado-evento';
+    overlay.style.cssText = `
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.8);
+        display: flex; align-items: center;
+        justify-content: center; z-index: 300;
+        animation: surgir 0.3s ease;
+    `;
+    overlay.innerHTML = `
+        <div style="background: ${corFundo}; border-radius: 20px;
+            padding: 48px; max-width: 500px; width: 90%;
+            text-align: center; border: 2px solid ${corBorda};
+            box-shadow: 0 0 40px ${corBorda};">
+            <div style="font-size: 5rem; margin-bottom: 16px;
+                animation: surgir 0.5s ease;">
+                ${dados.emoji || '⚡'}
+            </div>
+            <h2 style="color: ${corBorda}; margin-bottom: 16px; font-size: 1.5rem;">
+                ${isBolha ? '🫧 A Bolha Estourou!' : '🔥 A Fogueira Apagou!'}
+            </h2>
+            <div style="background: rgba(255,255,255,0.05); border-radius: 12px;
+                padding: 20px; margin: 16px 0;">
+                <p style="font-size: 1.1rem; color: var(--texto); line-height: 1.8;">
+                    ${dados.mensagem}
+                </p>
+            </div>
+            <div style="margin-top: 16px; color: var(--texto-fraco);
+                font-size: 0.85rem;">
+                Fechando em <span id="countdown-evento">5</span> segundos...
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // Countdown
+    let countdown = 5;
+    const timer = setInterval(() => {
+        countdown--;
+        const el = document.getElementById('countdown-evento');
+        if (el) el.textContent = countdown;
+        if (countdown <= 0) {
+            clearInterval(timer);
+            overlay.remove();
+        }
+    }, 1000);
 }
 
 // =============================================
@@ -657,14 +752,24 @@ function mostrarRevelacao(dados) {
 // =============================================
 // EVENTOS
 // =============================================
+let eventoPendente = false;
+let resolverEventoPendente = null;
+
+function sinalizarEventoConcluido() {
+    eventoPendente = false;
+    if (resolverEventoPendente) {
+        resolverEventoPendente();
+        resolverEventoPendente = null;
+    }
+}
+
 function mostrarEvento(evento) {
     if (!evento) return;
 
     const emojis = {
-        ROUBO: '💰', VENENO: '🧪', PARCEIROS: '🤝',
-        ROLETA: '🎰', DUPLICATA: '✌️', EXPOSICAO: '🔍',
-        LIDERANCA: '👑', OSMOSE: '🧂', TRAICAO: '🔪',
-        COPIA: '📄', BOLHA: '🫧', BOMBA_RELOGIO: '💣',
+        ROUBO: '💰', VENENO: '🧪', PARCEIROS: '🤝', ROLETA: '🎰',
+        DUPLICATA: '✌️', EXPOSICAO: '🔍', LIDERANCA: '👑', OSMOSE: '🧂',
+        TRAICAO: '🔪', COPIA: '📄', BOLHA: '🫧', BOMBA_RELOGIO: '💣',
         IGUALDADE: '🟰', FOGUEIRA: '🔥'
     };
 
@@ -676,55 +781,40 @@ function mostrarEvento(evento) {
         IGUALDADE: 'Igualdade', FOGUEIRA: 'Fogueira'
     };
 
-    document.getElementById('evento-emoji').textContent =
-        emojis[evento.tipo] || '⚡';
-    document.getElementById('evento-titulo').textContent =
-        nomes[evento.tipo] || evento.tipo;
-    document.getElementById('evento-descricao').textContent =
-        evento.descricao || '';
+    document.getElementById('evento-emoji').textContent = emojis[evento.tipo] || '⚡';
+    document.getElementById('evento-titulo').textContent = nomes[evento.tipo] || evento.tipo;
+    document.getElementById('evento-descricao').textContent = evento.descricao || '';
 
-    // Dispara animação
     dispararAnimacaoEvento(evento.tipo);
-
-    // Mostra overlay
     document.getElementById('overlay-evento').classList.remove('escondido');
 
-    // Fecha após 8 segundos e mostra interface
     setTimeout(() => {
         fecharEvento();
         eventoAtual = evento;
-        // Mostra interface do evento no painel de decisão
-        if (evento.requerDecisao) {
-            mostrarInterfaceEvento(evento);
-        }
+        if (evento.requerDecisao) mostrarInterfaceEvento(evento);
     }, 8000);
 }
-
-
-function obterEmojiEvento(tipo) {
-    const emojis = {
-        ROUBO: '💰', VENENO: '🧪', PARCEIROS: '🤝',
-        ROLETA: '🎰', DUPLICATA: '✌️', EXPOSICAO: '🔍',
-        LIDERANCA: '👑', OSMOSE: '🧂', TRAICAO: '🔪',
-        COPIA: '📄', BOLHA: '🫧', BOMBA_RELOGIO: '💣',
-        IGUALDADE: '🟰', FOGUEIRA: '🔥'
-    };
-    return emojis[tipo] || '⚡';
-}
-
 
 function fecharEvento() {
     document.getElementById('overlay-evento').classList.add('escondido');
     document.getElementById('evento-animacao').innerHTML = '';
 }
 
+function obterEmojiEvento(tipo) {
+    const emojis = {
+        ROUBO: '💰', VENENO: '🧪', PARCEIROS: '🤝', ROLETA: '🎰',
+        DUPLICATA: '✌️', EXPOSICAO: '🔍', LIDERANCA: '👑', OSMOSE: '🧂',
+        TRAICAO: '🔪', COPIA: '📄', BOLHA: '🫧', BOMBA_RELOGIO: '💣',
+        IGUALDADE: '🟰', FOGUEIRA: '🔥'
+    };
+    return emojis[tipo] || '⚡';
+}
+
 function dispararAnimacaoEvento(tipo) {
-    // Garante que o container existe
     let container = document.getElementById('evento-animacao');
     if (!container) return;
     container.innerHTML = '';
 
-    // Pequeno delay para garantir que o overlay está visível
     setTimeout(() => {
         const animacoes = {
             ROUBO:         () => animacaoCedulasCaindo(container),
@@ -742,12 +832,10 @@ function dispararAnimacaoEvento(tipo) {
             IGUALDADE:     () => animacaoMatematica(container),
             FOGUEIRA:      () => animacaoFogo(container),
         };
-        if (animacoes[tipo]) {
-            animacoes[tipo]();
-            console.log('Animação disparada:', tipo);
-        }
+        if (animacoes[tipo]) animacoes[tipo]();
     }, 100);
 }
+
 // =============================================
 // ANIMAÇÕES
 // =============================================
@@ -876,13 +964,12 @@ function animacaoFogo(c) {
     }
 }
 
-// Dados do evento atual
-let eventoAtual = null;
-
+// =============================================
+// INTERFACES DOS EVENTOS
+// =============================================
 function mostrarInterfaceEvento(evento, containerOverride) {
     eventoAtual = evento;
-    const painel = containerOverride ||
-        document.getElementById('painel-evento-extra');
+    const painel = containerOverride || document.getElementById('painel-evento-extra');
     if (!painel) return;
     painel.innerHTML = '';
     if (!containerOverride) painel.classList.remove('escondido');
@@ -904,7 +991,6 @@ function mostrarInterfaceEvento(evento, containerOverride) {
 }
 
 function mostrarInterfaceEventoAntes(evento) {
-    // Remove painel anterior
     const painelExistente = document.getElementById('painel-evento-antes');
     if (painelExistente) painelExistente.remove();
 
@@ -923,10 +1009,6 @@ function mostrarInterfaceEventoAntes(evento) {
     mostrarInterfaceEvento(evento, conteudo);
 }
 
-// =============================================
-// INTERFACES DOS EVENTOS
-// =============================================
-
 function seletorJogadores(excluirEuMesmo = true) {
     const jogadores = Object.keys(estadoAtual.contasPessoais || {});
     const opcoes = jogadores
@@ -940,25 +1022,17 @@ function seletorJogadores(excluirEuMesmo = true) {
 }
 
 function mostrarInterfaceRoubo(evento, painel) {
-    if (evento.jogadorAlvoId !== usernameAtual &&
-        !evento.executorId?.includes(usernameAtual)) {
-        painel.innerHTML = `<p class="evento-info-neutro">
-            👀 Aguardando o ladrão escolher sua vítima...
-        </p>`;
+    if (!evento.souExecutor) {
+        painel.innerHTML = `<p class="evento-info-neutro">👀 Aguardando o ladrão escolher sua vítima...</p>`;
         return;
     }
     painel.innerHTML = `
         <div class="evento-interface">
-            <p>💰 Você é o <strong>Ladrão</strong>! Escolha quem roubar
-               (ou não roube ninguém):</p>
+            <p>💰 Você é o <strong>Ladrão</strong>! Escolha quem roubar (ou não roube ninguém):</p>
             ${seletorJogadores()}
             <div class="evento-botoes">
-                <button class="btn-evento-acao" onclick="confirmarRoubo()">
-                    💰 Roubar
-                </button>
-                <button class="btn-evento-neutro" onclick="recusarRoubo()">
-                    Não roubar ninguém
-                </button>
+                <button class="btn-evento-acao" onclick="confirmarRoubo()">💰 Roubar</button>
+                <button class="btn-evento-neutro" onclick="recusarRoubo()">Não roubar ninguém</button>
             </div>
         </div>
     `;
@@ -970,6 +1044,10 @@ async function confirmarRoubo() {
     await enviarAcaoEvento({ tipo: 'ROUBO', acao: 'ROUBAR', alvo });
     document.getElementById('painel-evento-extra').innerHTML =
         '<p class="evento-info-neutro">✅ Ação registrada!</p>';
+        const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">💰 Roubo Pronto!</p></div>';
+    sinalizarEventoConcluido();
 }
 
 async function recusarRoubo() {
@@ -980,20 +1058,15 @@ async function recusarRoubo() {
 
 function mostrarInterfaceVeneno(evento, painel) {
     if (!evento.souFeiticeiro) {
-        painel.innerHTML = `<p class="evento-info-neutro">
-            🧪 Aguardando o Feiticeiro escolher sua vítima...
-        </p>`;
+        painel.innerHTML = `<p class="evento-info-neutro">🧪 Aguardando o Feiticeiro escolher sua vítima...</p>`;
         return;
     }
     painel.innerHTML = `
         <div class="evento-interface">
             <p>🧪 Você é o <strong>Feiticeiro</strong>! Escolha quem envenenar:</p>
-            <p class="evento-aviso">Se a vítima não colocar 5 moedas nos tributos,
-               perderá 5 moedas do bem-pessoal!</p>
+            <p class="evento-aviso">Se a vítima não colocar 5 moedas nos tributos, perderá 5 moedas!</p>
             ${seletorJogadores()}
-            <button class="btn-evento-acao" onclick="confirmarVeneno()">
-                🧪 Envenenar
-            </button>
+            <button class="btn-evento-acao" onclick="confirmarVeneno()">🧪 Envenenar</button>
         </div>
     `;
 }
@@ -1002,32 +1075,28 @@ async function confirmarVeneno() {
     const alvo = document.getElementById('select-alvo-evento')?.value;
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     await enviarAcaoEvento({ tipo: 'VENENO', acao: 'ENVENENAR', alvo });
-    document.getElementById('painel-evento-extra').innerHTML =
-        '<p class="evento-info-neutro">🧪 Veneno preparado!</p>';
+    const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">🧪 Veneno preparado!</p></div>';
+    sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceParceiros(evento, painel) {
     if (!evento.souParceiro) {
-        painel.innerHTML = `<p class="evento-info-neutro">
-            🤝 Aguardando os parceiros decidirem...
-        </p>`;
+        painel.innerHTML = `<p class="evento-info-neutro">🤝 Aguardando os parceiros decidirem...</p>`;
         return;
     }
     painel.innerHTML = `
         <div class="evento-interface">
             <p>🤝 Você é <strong>Parceiro</strong>! Escolha sua ação:</p>
             <p class="evento-aviso">
-                Ambos compartilham → bem-pessoal ×1.5 para os dois<br>
+                Ambos compartilham → bem-pessoal ×1.5<br>
                 Você engana, outro compartilha → seu bem-pessoal ×2<br>
                 Ambos enganam → nada acontece
             </p>
             <div class="evento-botoes">
-                <button class="btn-evento-acao" onclick="escolherParceiro('COMPARTILHAR')">
-                    🤝 Compartilhar
-                </button>
-                <button class="btn-evento-perigo" onclick="escolherParceiro('ENGANAR')">
-                    😈 Enganar
-                </button>
+                <button class="btn-evento-acao" onclick="escolherParceiro('COMPARTILHAR')">🤝 Compartilhar</button>
+                <button class="btn-evento-perigo" onclick="escolherParceiro('ENGANAR')">😈 Enganar</button>
             </div>
         </div>
     `;
@@ -1037,87 +1106,106 @@ async function escolherParceiro(acao) {
     await enviarAcaoEvento({ tipo: 'PARCEIROS', acao });
     document.getElementById('painel-evento-extra').innerHTML =
         `<p class="evento-info-neutro">✅ Você escolheu: ${acao}</p>`;
+        const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">🤝 Escolha Feita!</p></div>';
+    sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceRoleta(evento, painel) {
+    window.girosRoleta = 0;
+    window.saldoRoleta = 0;
+    window.maxGiros = 3;
+
     painel.innerHTML = `
         <div class="evento-interface">
             <p>🎰 <strong>Roleta!</strong> Você pode girar até 3 vezes:</p>
             <p class="evento-aviso">
-                Cair em 1 ou 8 → +5 moedas no bem-pessoal<br>
+                Cair em 1 ou 8 → bem-pessoal ×1.5<br>
                 Qualquer outro → -5 moedas no bem-pessoal
             </p>
-            <div id="roleta-resultado" style="font-size:2rem; text-align:center;
-                margin:12px 0; min-height:40px;"></div>
-            <div id="roleta-saldo" style="text-align:center; color:var(--destaque);
+            <div id="roleta-resultado" style="font-size:2rem;text-align:center;
+                margin:12px 0;min-height:40px;"></div>
+            <div id="roleta-saldo" style="text-align:center;color:var(--destaque);
                 margin-bottom:8px;"></div>
             <div class="evento-botoes">
                 <button class="btn-evento-acao" id="btn-girar"
                     onclick="girarRoleta()">
                     🎰 Girar (3 restantes)
                 </button>
-                <button class="btn-evento-neutro" onclick="pararRoleta()">
-                    Parar de girar
+                <button class="btn-evento-neutro" id="btn-parar-roleta"
+                    onclick="pararRoleta()">
+                    Não girar mais
                 </button>
             </div>
         </div>
     `;
-    window.girosRoleta = 0;
-    window.saldoRoleta = 0;
 }
 
 async function girarRoleta() {
-    if (window.girosRoleta >= 3) return;
+    if (window.girosRoleta >= window.maxGiros) return;
     window.girosRoleta++;
-    const restantes = 3 - window.girosRoleta;
-
+    const restantes = window.maxGiros - window.girosRoleta;
     const resultado = Math.floor(Math.random() * 8) + 1;
     const ganhou = resultado === 1 || resultado === 8;
-    const efeito = ganhou ? +5 : -5;
-    window.saldoRoleta += efeito;
 
     document.getElementById('roleta-resultado').innerHTML =
         `<span style="color:${ganhou ? 'var(--sucesso)' : 'var(--perigo)'}">
-            ${resultado} ${ganhou ? '✅ +5' : '❌ -5'}
+            ${resultado} ${ganhou ? '✅ ×1.5' : '❌ -5'}
         </span>`;
-    document.getElementById('roleta-saldo').textContent =
-        `Saldo desta rodada: ${window.saldoRoleta > 0 ? '+' : ''}${window.saldoRoleta} 🪙`;
+
+    await enviarAcaoEvento({ tipo: 'ROLETA', acao: 'GIRAR', resultado });
 
     const btn = document.getElementById('btn-girar');
     if (btn) btn.textContent = `🎰 Girar (${restantes} restantes)`;
 
-    await enviarAcaoEvento({
-        tipo: 'ROLETA', acao: 'GIRAR', resultado, efeito
-    });
-
+    // Quando acabar os giros, fecha automaticamente
     if (restantes === 0) {
         if (btn) btn.disabled = true;
+        const btnParar = document.getElementById('btn-parar-roleta');
+        if (btnParar) btnParar.disabled = true;
+        setTimeout(() => {
+            const painel = document.getElementById('painel-evento-antes');
+            if (painel) {
+                painel.innerHTML = `
+                    <div class="decisao-card">
+                        <p class="evento-info-neutro">🎰 Roleta encerrada!</p>
+                    </div>
+                `;
+            }
+            sinalizarEventoConcluido();
+        }, 1500);
     }
 }
 
 async function pararRoleta() {
     await enviarAcaoEvento({ tipo: 'ROLETA', acao: 'PARAR' });
+    const painel = document.getElementById('painel-evento-antes');
+    if (painel) {
+        painel.innerHTML = `
+            <div class="decisao-card">
+                <p class="evento-info-neutro">🎰 Roleta encerrada!</p>
+            </div>
+        `;
+    }
+    sinalizarEventoConcluido();
+}
+
+async function pararRoleta() {
+    await enviarAcaoEvento({ tipo: 'ROLETA', acao: 'PARAR' });
     document.getElementById('painel-evento-extra').innerHTML =
-        `<p class="evento-info-neutro">✅ Roleta encerrada!
-        Saldo: ${window.saldoRoleta > 0 ? '+' : ''}${window.saldoRoleta} 🪙</p>`;
+        `<p class="evento-info-neutro">✅ Roleta encerrada! Saldo: ${window.saldoRoleta > 0 ? '+' : ''}${window.saldoRoleta} 🪙</p>`;
 }
 
 function mostrarInterfaceDuplicata(evento, painel) {
     painel.innerHTML = `
         <div class="evento-interface">
-            <p>✌️ <strong>Duplicata!</strong> Após confirmar suas moedas,
-               escolha uma opção:</p>
+            <p>✌️ <strong>Duplicata!</strong> Após confirmar suas moedas, escolha uma opção:</p>
             <p class="evento-aviso">50% de chance de ×2 ou ÷2</p>
             <div class="evento-botoes">
-                <button class="btn-evento-acao" onclick="escolherDuplicata('TRIBUTO')">
-                    🏛️ Duplicar Tributos
-                </button>
-                <button class="btn-evento-acao" onclick="escolherDuplicata('BEM_PESSOAL')">
-                    💼 Duplicar Bem-pessoal
-                </button>
-                <button class="btn-evento-neutro" onclick="escolherDuplicata('NENHUM')">
-                    Nenhuma
-                </button>
+                <button class="btn-evento-acao" onclick="escolherDuplicata('TRIBUTO')">🏛️ Duplicar Tributos</button>
+                <button class="btn-evento-acao" onclick="escolherDuplicata('BEM_PESSOAL')">💼 Duplicar Bem-pessoal</button>
+                <button class="btn-evento-neutro" onclick="escolherDuplicata('NENHUM')">Nenhuma</button>
             </div>
         </div>
     `;
@@ -1131,23 +1219,16 @@ async function escolherDuplicata(opcao) {
 
 function mostrarInterfaceExposicao(evento, painel) {
     if (!evento.souExpositor) {
-        painel.innerHTML = `<p class="evento-info-neutro">
-            🔍 O Expositor está espiando alguém...
-        </p>`;
+        painel.innerHTML = `<p class="evento-info-neutro">🔍 O Expositor está espiando alguém...</p>`;
         return;
     }
     painel.innerHTML = `
         <div class="evento-interface">
-            <p>🔍 Você é o <strong>Expositor</strong>!
-               Escolha quem espiar (opcional):</p>
+            <p>🔍 Você é o <strong>Expositor</strong>! Escolha quem espiar (opcional):</p>
             ${seletorJogadores(false)}
             <div class="evento-botoes">
-                <button class="btn-evento-acao" onclick="confirmarExposicao()">
-                    🔍 Espiar
-                </button>
-                <button class="btn-evento-neutro" onclick="recusarExposicao()">
-                    Não espiar ninguém
-                </button>
+                <button class="btn-evento-acao" onclick="confirmarExposicao()">🔍 Espiar</button>
+                <button class="btn-evento-neutro" onclick="recusarExposicao()">Não espiar ninguém</button>
             </div>
             <div id="resultado-exposicao" style="margin-top:12px;"></div>
         </div>
@@ -1160,10 +1241,7 @@ async function confirmarExposicao() {
     const resp = await enviarAcaoEvento({ tipo: 'EXPOSICAO', acao: 'ESPIAR', alvo });
     if (resp && resp.bemPessoal !== undefined) {
         document.getElementById('resultado-exposicao').innerHTML =
-            `<p style="color:var(--destaque)">
-                💼 ${alvo} tem <strong>${resp.bemPessoal} moedas</strong>
-                no bem-pessoal!
-            </p>`;
+            `<p style="color:var(--destaque)">💼 ${alvo} tem <strong>${resp.bemPessoal} moedas</strong> no bem-pessoal!</p>`;
     }
 }
 
@@ -1177,14 +1255,47 @@ function mostrarInterfaceLideranca(evento, painel) {
     painel.innerHTML = `
         <div class="evento-interface">
             <p>👑 <strong>Liderança!</strong> Vote em quem deve ser o Líder:</p>
+            <p class="evento-aviso">O Líder receberá todas as moedas e decidirá
+               o destino de cada uma!</p>
             ${seletorJogadores(false)}
-            <button class="btn-evento-acao" onclick="votarLider()">
+            <button class="btn-evento-acao" onclick="votarLideranca()">
                 👑 Votar
             </button>
             <div id="placar-lideranca" style="margin-top:12px;
                 color:var(--texto-fraco); font-size:0.85rem;"></div>
         </div>
     `;
+}
+
+async function votarLideranca() {
+    const alvo = document.getElementById('select-alvo-evento')?.value;
+    if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
+
+    await fetch('/jogo/evento/lideranca/votar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codigoSala, alvo })
+    });
+
+    document.getElementById('painel-evento-extra') &&
+        (document.getElementById('painel-evento-extra').innerHTML =
+            '<p class="evento-info-neutro">✅ Voto registrado!</p>');
+
+    const conteudoAntes = document.getElementById('conteudo-evento-antes');
+    if (conteudoAntes) conteudoAntes.innerHTML =
+        '<p class="evento-info-neutro">✅ Voto registrado! Aguardando...</p>';
+        const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">👑 Voto Computado!</p></div>';
+    sinalizarEventoConcluido();
+}
+
+function atualizarPlacarLideranca(votos) {
+    const placar = document.getElementById('placar-lideranca');
+    if (!placar) return;
+    placar.innerHTML = Object.entries(votos)
+        .map(([nome, qtd]) => `${nome}: ${qtd} voto(s)`)
+        .join(' | ');
 }
 
 async function votarLider() {
@@ -1198,17 +1309,12 @@ async function votarLider() {
 function mostrarInterfaceOsmose(evento, painel) {
     painel.innerHTML = `
         <div class="evento-interface">
-            <p>🧂 <strong>Osmose!</strong> Desafie alguém para um duelo
-               (após confirmar moedas):</p>
+            <p>🧂 <strong>Osmose!</strong> Desafie alguém para um duelo (após confirmar moedas):</p>
             <p class="evento-aviso">Quem tiver mais bem-pessoal rouba 3 moedas do outro.</p>
             ${seletorJogadores()}
             <div class="evento-botoes">
-                <button class="btn-evento-acao" onclick="confirmarOsmose()">
-                    ⚔️ Desafiar
-                </button>
-                <button class="btn-evento-neutro" onclick="recusarOsmose()">
-                    Não desafiar
-                </button>
+                <button class="btn-evento-acao" onclick="confirmarOsmose()">⚔️ Desafiar</button>
+                <button class="btn-evento-neutro" onclick="recusarOsmose()">Não desafiar</button>
             </div>
         </div>
     `;
@@ -1219,48 +1325,46 @@ async function confirmarOsmose() {
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     const resp = await enviarAcaoEvento({ tipo: 'OSMOSE', acao: 'DESAFIAR', alvo });
     let msg = '⚔️ Duelo realizado!';
-    if (resp) {
-        if (resp.resultado === 1) msg = '⚔️ Você venceu o duelo! +3 moedas!';
-        else if (resp.resultado === -1) msg = '⚔️ Você perdeu o duelo! -3 moedas.';
-        else msg = '⚔️ Empate! Nada aconteceu.';
-    }
+    if (resp?.resultado === 1) msg = '⚔️ Você venceu! +3 moedas!';
+    else if (resp?.resultado === -1) msg = '⚔️ Você perdeu! -3 moedas.';
+    else if (resp?.resultado === 0) msg = '⚔️ Empate!';
     document.getElementById('painel-evento-extra').innerHTML =
         `<p class="evento-info-neutro">${msg}</p>`;
+        const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">⚔️ Desafio Feito!</p></div>';
+    sinalizarEventoConcluido();
 }
 
 async function recusarOsmose() {
     await enviarAcaoEvento({ tipo: 'OSMOSE', acao: 'RECUSAR' });
     document.getElementById('painel-evento-extra').innerHTML =
         '<p class="evento-info-neutro">✅ Você optou por não desafiar.</p>';
+        const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">⚔️ Desafio Recusado!</p></div>';
+    sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceTraicao(evento, painel) {
     if (evento.souTraidor) {
         painel.innerHTML = `
             <div class="evento-interface">
-                <p>🔪 Você é o <strong>Traidor</strong>!
-                   Escolha quem trair:</p>
+                <p>🔪 Você é o <strong>Traidor</strong>! Escolha quem trair:</p>
                 ${seletorJogadores()}
-                <button class="btn-evento-perigo" onclick="confirmarTraicao()">
-                    🔪 Trair
-                </button>
+                <button class="btn-evento-perigo" onclick="confirmarTraicao()">🔪 Trair</button>
             </div>
         `;
     } else if (evento.souVitima) {
         painel.innerHTML = `
             <div class="evento-interface">
-                <p>🔪 Você foi <strong>traído</strong>!
-                   Tente adivinhar quem foi o traidor:</p>
+                <p>🔪 Você foi <strong>traído</strong>! Tente adivinhar quem foi o traidor:</p>
                 ${seletorJogadores()}
-                <button class="btn-evento-acao" onclick="adivinharTraidor()">
-                    🔍 Acusar
-                </button>
+                <button class="btn-evento-acao" onclick="adivinharTraidor()">🔍 Acusar</button>
             </div>
         `;
     } else {
-        painel.innerHTML = `<p class="evento-info-neutro">
-            🔪 Um traidor está agindo nas sombras...
-        </p>`;
+        painel.innerHTML = `<p class="evento-info-neutro">🔪 Um traidor está agindo nas sombras...</p>`;
     }
 }
 
@@ -1270,6 +1374,10 @@ async function confirmarTraicao() {
     await enviarAcaoEvento({ tipo: 'TRAICAO', acao: 'TRAIR', alvo });
     document.getElementById('painel-evento-extra').innerHTML =
         '<p class="evento-info-neutro">🔪 Traição registrada!</p>';
+        const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">🔪 Alvo na Mira!</p></div>';
+    sinalizarEventoConcluido();
 }
 
 async function adivinharTraidor() {
@@ -1286,16 +1394,11 @@ async function adivinharTraidor() {
 function mostrarInterfaceCopia(evento, painel) {
     painel.innerHTML = `
         <div class="evento-interface">
-            <p>📄 <strong>Cópia!</strong> Após confirmar moedas,
-               você pode copiar o bem-pessoal de alguém:</p>
+            <p>📄 <strong>Cópia!</strong> Após confirmar moedas, você pode copiar o bem-pessoal de alguém:</p>
             ${seletorJogadores()}
             <div class="evento-botoes">
-                <button class="btn-evento-acao" onclick="confirmarCopia()">
-                    📄 Copiar
-                </button>
-                <button class="btn-evento-neutro" onclick="recusarCopia()">
-                    Não copiar ninguém
-                </button>
+                <button class="btn-evento-acao" onclick="confirmarCopia()">📄 Copiar</button>
+                <button class="btn-evento-neutro" onclick="recusarCopia()">Não copiar ninguém</button>
             </div>
         </div>
     `;
@@ -1318,18 +1421,11 @@ async function recusarCopia() {
 function mostrarInterfaceIgualdade(evento, painel) {
     painel.innerHTML = `
         <div class="evento-interface">
-            <p>🟰 <strong>Igualdade!</strong> Votem: devemos igualar
-               todos os bem-pessoais?</p>
+            <p>🟰 <strong>Igualdade!</strong> Votem: devemos igualar todos os bem-pessoais?</p>
             <div class="evento-botoes">
-                <button class="btn-evento-acao" onclick="votarIgualdade(true)">
-                    ✅ Sim, igualar
-                </button>
-                <button class="btn-evento-perigo" onclick="votarIgualdade(false)">
-                    ❌ Não igualar
-                </button>
+                <button class="btn-evento-acao" onclick="votarIgualdade(true)">✅ Sim, igualar</button>
+                <button class="btn-evento-perigo" onclick="votarIgualdade(false)">❌ Não igualar</button>
             </div>
-            <div id="placar-igualdade" style="margin-top:12px;
-                color:var(--texto-fraco);"></div>
         </div>
     `;
 }
@@ -1338,23 +1434,22 @@ async function votarIgualdade(sim) {
     await enviarAcaoEvento({ tipo: 'IGUALDADE', acao: sim ? 'SIM' : 'NAO' });
     document.getElementById('painel-evento-extra').innerHTML =
         `<p class="evento-info-neutro">✅ Voto registrado!</p>`;
+        const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">✅ Decisão Feita!</p></div>';
+    sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceBomba(evento, painel) {
     if (!evento.souPortador) {
-        painel.innerHTML = `<p class="evento-info-neutro">
-            💣 A bomba está passando de mão em mão...
-        </p>`;
+        painel.innerHTML = `<p class="evento-info-neutro">💣 A bomba está passando de mão em mão...</p>`;
         return;
     }
     painel.innerHTML = `
         <div class="evento-interface">
-            <p>💣 Você está com a <strong>Bomba-Relógio</strong>!
-               Passe para alguém antes que exploda!</p>
+            <p>💣 Você está com a <strong>Bomba-Relógio</strong>! Passe para alguém antes que exploda!</p>
             ${seletorJogadores()}
-            <button class="btn-evento-perigo" onclick="passarBomba()">
-                💣 Passar a Bomba
-            </button>
+            <button class="btn-evento-perigo" onclick="passarBomba()">💣 Passar a Bomba</button>
         </div>
     `;
 }
@@ -1363,25 +1458,22 @@ async function passarBomba() {
     const alvo = document.getElementById('select-alvo-evento')?.value;
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     const resp = await enviarAcaoEvento({ tipo: 'BOMBA_RELOGIO', acao: 'PASSAR', alvo });
-    if (resp?.explodiu) {
-        document.getElementById('painel-evento-extra').innerHTML =
-            '<p class="evento-info-neutro">💥 A bomba explodiu!</p>';
-    } else {
-        document.getElementById('painel-evento-extra').innerHTML =
-            `<p class="evento-info-neutro">💣 Bomba passada para ${alvo}!</p>`;
-    }
+    document.getElementById('painel-evento-extra').innerHTML =
+        resp?.explodiu
+            ? '<p class="evento-info-neutro">💥 A bomba explodiu!</p>'
+            : `<p class="evento-info-neutro">💣 Bomba passada para ${alvo}!</p>`;
+            const painel = document.getElementById('painel-evento-antes');
+    if (painel) painel.innerHTML =
+        '<div class="decisao-card"><p class="evento-info-neutro">💣 Bomba Passada!</p></div>';
+    sinalizarEventoConcluido();
 }
 
-// Envia ação do evento para o servidor
 async function enviarAcaoEvento(dados) {
     try {
         const resp = await fetch('/jogo/evento/acao', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                codigoSala,
-                ...dados
-            })
+            body: JSON.stringify({ codigoSala, ...dados })
         });
         if (resp.ok) return await resp.json();
     } catch(e) {
@@ -1421,20 +1513,10 @@ async function votar(favor) {
     await fetch('/votacao/votar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            idVotacao: idVotacaoAtiva,
-            favor: favor,
-            codigoSala: codigoSala
-        })
+        body: JSON.stringify({ idVotacao: idVotacaoAtiva, favor, codigoSala })
     });
     document.querySelector('.votacao-botoes').innerHTML =
         '<p class="mensagem-sucesso">Voto registrado!</p>';
-}
-
-async function abrirVotacaoContra(nomeJogador) {
-    const resp = await fetch('/sala/' + codigoSala + '/jogadores');
-    const jogadores = await resp.json();
-    mostrarMensagemFlutuante('Votação aberta contra ' + nomeJogador + '!');
 }
 
 // =============================================

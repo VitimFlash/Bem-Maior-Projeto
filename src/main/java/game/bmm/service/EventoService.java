@@ -32,47 +32,47 @@ public class EventoService {
         String tipo = eventoExecutor.sortearTipo();
         if (tipo == null) return null;
 
+        Jogador alvoAleatorio = jogadoresAtivos.get(
+                new Random().nextInt(jogadoresAtivos.size())
+        );
+
         Evento evento = new Evento();
         evento.setTipo(tipo);
         evento.setRequerDecisao(eventoExecutor.requerDecisao(tipo));
         evento.setValorEfeito(0);
 
-        // Define alvo baseado no tipo do evento
-        Jogador alvoAleatorio = jogadoresAtivos.get(
-                new Random().nextInt(jogadoresAtivos.size())
-        );
-
+        // Define alvo ANTES de salvar
         switch (tipo) {
-            case "ROUBO" ->
-                // Alvo = ladrão
+            case "ROUBO", "VENENO", "EXPOSICAO", "TRAICAO" ->
                     evento.setJogadorAlvoId(alvoAleatorio.getId().toString());
-            case "VENENO" ->
-                // Alvo = feiticeiro
-                    evento.setJogadorAlvoId(alvoAleatorio.getId().toString());
-            case "EXPOSICAO" ->
-                // Alvo = expositor
-                    evento.setJogadorAlvoId(alvoAleatorio.getId().toString());
-            case "TRAICAO" ->
-                // Alvo = traidor
-                    evento.setJogadorAlvoId(alvoAleatorio.getId().toString());
+
             case "BOMBA_RELOGIO" -> {
-                // Alvo = portador inicial + ticks ocultos
                 evento.setJogadorAlvoId(alvoAleatorio.getId().toString());
                 evento.setValorEfeito(BombaRelogioStrategy.gerarTicks());
             }
+
             case "PARCEIROS" -> {
-                // Dois parceiros aleatórios
-                List<Jogador> embaralhados = new ArrayList<>(jogadoresAtivos);
-                Collections.shuffle(embaralhados);
-                Jogador p1 = embaralhados.get(0);
-                Jogador p2 = embaralhados.get(1);
-                evento.setJogadorAlvoId(p1.getId() + "," + p2.getId());
+                // Garante 2 jogadores diferentes
+                if (jogadoresAtivos.size() < 2) {
+                    evento.setJogadorAlvoId(alvoAleatorio.getId().toString());
+                } else {
+                    List<Jogador> embaralhados = new ArrayList<>(jogadoresAtivos);
+                    Collections.shuffle(embaralhados);
+                    evento.setJogadorAlvoId(
+                            embaralhados.get(0).getId() + "," + embaralhados.get(1).getId()
+                    );
+                }
             }
-            // Roleta, Duplicata, Osmose, Copia, Igualdade, Liderança,
-            // Bolha, Fogueira — sem alvo específico
+
+            // Eventos sem alvo específico
             default -> evento.setJogadorAlvoId(null);
         }
 
+        System.out.println("=== EVENTO SORTEADO ===");
+        System.out.println("Tipo: " + tipo);
+        System.out.println("Alvo ID definido: " + evento.getJogadorAlvoId());
+
+        // Salva DEPOIS de definir o alvo
         return eventoRepository.save(evento);
     }
 

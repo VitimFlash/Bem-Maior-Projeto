@@ -76,7 +76,26 @@ public class JogoService {
         Rodada rodada = buscarRodadaAtiva(sala);
         List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
         List<Decisao> decisoes = decisaoRepository.findByRodada(rodada);
-        return decisoes.size() >= ativos.size();
+
+        System.out.println("=== VERIFICANDO DECISOES ===");
+        System.out.println("Jogadores ativos: " + ativos.size());
+        System.out.println("Decisoes registradas: " + decisoes.size());
+        ativos.forEach(j -> System.out.println("  Ativo: " + j.getUsuario().getUsername()));
+        decisoes.forEach(d -> System.out.println("  Decidiu: " +
+                d.getJogador().getUsuario().getUsername()));
+
+        // Verifica se cada jogador ativo tem uma decisão nesta rodada
+        for (Jogador jogador : ativos) {
+            boolean temDecisao = decisoes.stream()
+                    .anyMatch(d -> d.getJogador().getId().equals(jogador.getId()));
+            if (!temDecisao) {
+                System.out.println("  FALTANDO: " + jogador.getUsuario().getUsername());
+                return false;
+            }
+        }
+
+        System.out.println("  TODOS DECIDIRAM!");
+        return true;
     }
 
     // Processa os tributos e distribui para conta-pessoal
@@ -333,12 +352,32 @@ public class JogoService {
                 resultado.put("escolha", acao);
                 resultado.put("mensagem", "Escolha registrada!");
             }
+            case "LIDERANCA" -> {
+                if ("VOTAR".equals(acao) && alvoUsername != null) {
+                    // Armazena voto — processado pelo controller
+                    resultado.put("voto", alvoUsername);
+                    resultado.put("notificarSala", true);
+                    resultado.put("mensagemSala", username + " votou!");
+                } else if ("DISTRIBUIR".equals(acao)) {
+                    // Líder distribui moedas para cada jogador
+                    // body contém distribuicao: {username: {tributo: X, bemPessoal: Y}}
+                    resultado.put("distribuicaoAplicada", true);
+                }
+            }
             case "ROLETA" -> {
                 if ("GIRAR".equals(acao)) {
-                    int efeito = (int) resultado.getOrDefault("efeito", 0);
-                    executor.setBemPessoal(executor.getBemPessoal() + efeito);
+                    int resultadoDado = (int) body.getOrDefault("resultado", 0);
+                    boolean ganhou = resultadoDado == 1 || resultadoDado == 8;
+                    if (ganhou) {
+                        // Multiplica bem-pessoal por 1.5
+                        int bemAtual = executor.getBemPessoal();
+                        executor.setBemPessoal((int)(bemAtual * 1.5));
+                    } else {
+                        executor.setBemPessoal(executor.getBemPessoal() - 5);
+                    }
                     jogadorRepository.save(executor);
-                    resultado.put("aplicado", true);
+                    resultado.put("ganhou", ganhou);
+                    resultado.put("resultadoDado", resultadoDado);
                 }
             }
             case "DUPLICATA" -> {
@@ -371,6 +410,9 @@ public class JogoService {
                     jogadorRepository.save(executor);
                     jogadorRepository.save(alvo);
                     resultado.put("resultado", r);
+                    // Resultado privado — só o desafiante vê
+                } else if ("RECUSAR".equals(acao)) {
+                    resultado.put("recusou", true);
                 }
             }
             case "TRAICAO" -> {
@@ -430,54 +472,66 @@ public class JogoService {
         info.requerDecisao = evento.isRequerDecisao();
         info.jogadorAlvoId = evento.getJogadorAlvoId();
 
-        List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
         Jogador jogadorAtual = buscarJogador(username, sala);
         String idAtual = jogadorAtual.getId().toString();
+        String alvoId = evento.getJogadorAlvoId();
+
+        System.out.println("=== EVENTO INFO ===");
+        System.out.println("Tipo: " + evento.getTipo());
+        System.out.println("Username: " + username);
+        System.out.println("ID atual: " + idAtual);
+        System.out.println("Alvo ID: " + alvoId);
 
         switch (evento.getTipo()) {
             case "ROUBO" -> {
-                // O alvo do evento é o ladrão
-                info.souExecutor = idAtual.equals(evento.getJogadorAlvoId());
+                info.souExecutor = idAtual.equals(alvoId);
+                System.out.println("ROUBO - souLadrao: " + info.souExecutor);
             }
             case "VENENO" -> {
-                info.souFeiticeiro = idAtual.equals(evento.getJogadorAlvoId());
+                info.souFeiticeiro = idAtual.equals(alvoId);
+                System.out.println("VENENO - souFeiticeiro: " + info.souFeiticeiro);
             }
             case "PARCEIROS" -> {
-                // jogadorAlvoId contém "id1,id2"
-                if (evento.getJogadorAlvoId() != null) {
-                    String[] ids = evento.getJogadorAlvoId().split(",");
+                if (alvoId != null) {
+                    String[] ids = alvoId.split(",");
                     info.souParceiro = java.util.Arrays.stream(ids)
-                            .anyMatch(id -> id.equals(idAtual));
+                            .anyMatch(id -> id.trim().equals(idAtual));
+                    System.out.println("PARCEIROS - souParceiro: " +
+                            info.souParceiro + " ids: " + alvoId);
                 }
             }
             case "EXPOSICAO" -> {
-                info.souExpositor = idAtual.equals(evento.getJogadorAlvoId());
+                info.souExpositor = idAtual.equals(alvoId);
+                System.out.println("EXPOSICAO - souExpositor: " + info.souExpositor);
             }
             case "TRAICAO" -> {
-                info.souTraidor = idAtual.equals(evento.getJogadorAlvoId());
+                info.souTraidor = idAtual.equals(alvoId);
+                System.out.println("TRAICAO - souTraidor: " + info.souTraidor);
             }
             case "BOMBA_RELOGIO" -> {
-                info.souPortador = idAtual.equals(evento.getJogadorAlvoId());
+                info.souPortador = idAtual.equals(alvoId);
+                System.out.println("BOMBA - souPortador: " + info.souPortador);
             }
-            case "ROLETA", "DUPLICATA", "OSMOSE", "COPIA", "IGUALDADE",
-                 "LIDERANCA" -> {
-                info.souExecutor = true; // todos têm ação
+            case "ROLETA", "DUPLICATA", "OSMOSE",
+                 "COPIA", "IGUALDADE", "LIDERANCA" -> {
+                info.souExecutor = true;
             }
         }
+
         return info;
     }
 
     public boolean eventoDecideAntesDasMoedas(String tipo) {
         return switch (tipo) {
             case "VENENO", "LIDERANCA", "IGUALDADE",
-                 "BOMBA_RELOGIO", "PARCEIROS", "ROUBO", "COPIA"-> true;
+                 "BOMBA_RELOGIO", "PARCEIROS", "ROUBO", "OSMOSE", "COPIA"-> true;
             default -> false;
         };
     }
 
     public boolean eventoDecideDepoisDasMoedas(String tipo) {
         return switch (tipo) {
-            case  "ROLETA", "DUPLICATA", "EXPOSICAO", "OSMOSE", "TRAICAO" -> false;
+            case  "ROLETA", "DUPLICATA", "EXPOSICAO", "TRAICAO" -> false;
             default -> false;
         };
     }
