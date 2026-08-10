@@ -9,5 +9,5 @@ import java.util.Optional;
 public interface RodadaRepository extends JpaRepository<Rodada, Long> {
     List<Rodada> findBySalaOrderByNumeroAsc(Sala sala);
     Optional<Rodada> findBySalaAndNumero(Sala sala, int numero);
-    Optional<Rodada> findBySalaAndStatus(Sala sala, String status);
+    List<Rodada> findBySalaAndStatusOrderByNumeroDesc(Sala sala, String status);
 }

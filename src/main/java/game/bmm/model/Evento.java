@@ -15,6 +15,9 @@ public class Evento {
     private boolean requerDecisao;
     private int valorEfeito;
 
+    @Column(name = "jogador_alvo_id")
+    private String jogadorAlvoId;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
@@ -30,10 +33,11 @@ public class Evento {
     public int getValorEfeito() { return valorEfeito; }
     public void setValorEfeito(int valorEfeito) { this.valorEfeito = valorEfeito; }
 
-    public void setJogadorAlvoId(String string) {
+    public void setJogadorAlvoId(String jogadorAlvoId) {
+        this.jogadorAlvoId = jogadorAlvoId;
     }
 
     public String getJogadorAlvoId() {
-        return null;
+        return jogadorAlvoId;
     }
 }

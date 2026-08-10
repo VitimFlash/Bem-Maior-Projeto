@@ -23,7 +23,7 @@ public class Rodada {
     private String status;
     // "AGUARDANDO_DECISOES", "PROCESSANDO", "CONCLUIDA"
 
-    @OneToOne
+    @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "evento_id")
     private Evento evento;
 

@@ -43,7 +43,7 @@ public class EventoService {
 
         // Define alvo ANTES de salvar
         switch (tipo) {
-            case "ROUBO", "VENENO", "EXPOSICAO", "TRAICAO" ->
+            case "ROUBO", "VENENO", "EXPOSICAO", "TRAICAO", "LIDERANCA" ->
                     evento.setJogadorAlvoId(alvoAleatorio.getId().toString());
 
             case "BOMBA_RELOGIO" -> {
@@ -63,17 +63,19 @@ public class EventoService {
                     );
                 }
             }
-
-            // Eventos sem alvo específico
             default -> evento.setJogadorAlvoId(null);
         }
 
         System.out.println("=== EVENTO SORTEADO ===");
         System.out.println("Tipo: " + tipo);
         System.out.println("Alvo ID definido: " + evento.getJogadorAlvoId());
+        Evento salvo = eventoRepository.save(evento);
 
-        // Salva DEPOIS de definir o alvo
-        return eventoRepository.save(evento);
+        System.out.println("=== EVENTO SALVO NO BANCO ===");
+        System.out.println("ID: " + salvo.getId());
+        System.out.println("Tipo: " + salvo.getTipo());
+        System.out.println("Alvo ID salvo: " + salvo.getJogadorAlvoId());
+        return salvo;
     }
 
     // Executa o evento da rodada

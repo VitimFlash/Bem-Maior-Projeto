@@ -158,67 +158,71 @@ function tratarMensagemSala(dados) {
             break;
 
         case 'DECISAO':
-        case 'EM_JOGO':
-            estadoAtual = dados;
+    case 'EM_JOGO':
+        estadoAtual = dados;
 
-            // Remove painéis anteriores
-            const painelAntes = document.getElementById('painel-evento-antes');
-            if (painelAntes) painelAntes.remove();
+        const painelAntes = document.getElementById('painel-evento-antes');
+        if (painelAntes) painelAntes.remove();
 
-            const painelDisc = document.getElementById('painel-discussao');
-            if (painelDisc) painelDisc.remove();
+        const painelDisc = document.getElementById('painel-discussao');
+        if (painelDisc) painelDisc.remove();
 
-            if (intervaloDiscussao) {
-                clearInterval(intervaloDiscussao);
-                intervaloDiscussao = null;
-            }
+        if (intervaloDiscussao) {
+            clearInterval(intervaloDiscussao);
+            intervaloDiscussao = null;
+        }
 
-            atualizarMesa(dados);
-            atualizarInfoRodada(dados);
+        atualizarMesa(dados);
+        atualizarInfoRodada(dados);
 
-            // Só mostra painel se ainda não confirmou
-            if (!jaConfirmouDecisao) {
-                mostrarFaseDecisao(dados);
-            }
+        if (!jaConfirmouDecisao) {
+            mostrarFaseDecisao(dados);
+        }
 
-            // Evento após decisão
-            if (dados.decisaoEventoDepois && dados.eventoAtualInfo && !jaMostrouDecisaoEvento) {
-                jaMostrouDecisaoEvento = true;
-                eventoAtual = dados.eventoAtualInfo;
-                setTimeout(() => mostrarInterfaceEvento(dados.eventoAtualInfo), 500);
-            }
-            break;
+        // Evento após decisão — só mostra uma vez e não limpa
+        if (dados.decisaoEventoDepois && dados.eventoAtualInfo &&
+            !jaMostrouDecisaoEvento) {
+            jaMostrouDecisaoEvento = true;
+            eventoAtual = dados.eventoAtualInfo;
+            // Guarda referência para reexibir se necessário
+            window._eventoDepoisPendente = dados.eventoAtualInfo;
+            setTimeout(() => mostrarInterfaceEvento(dados.eventoAtualInfo), 500);
+        }
+        break;
 
         case 'LIDERANCA_VOTOS':
             atualizarPlacarLideranca(dados.votos);
         break;
 
         case 'LIDER_ELEITO':
-            mostrarMensagemFlutuante('👑 ' + dados.lider + ' é o Líder!');
-            // Esconde painel de votação para não-líderes
-            const painelLider = document.getElementById('painel-evento-antes');
-            if (painelLider) {
-                  painelLider.innerHTML = `
-                       <div class="decisao-card">
-                          <h3>👑 Líder Eleito!</h3>
-                           <p style="text-align:center; color:var(--destaque); font-size:1.2rem;">
-                              ${dados.lider} é o Líder desta rodada!
-                         </p>
-                         <p style="color:var(--texto-fraco); text-align:center;">
-                             Aguardando o líder distribuir as moedas...
-                         </p>
-                     </div>
-                 `;
+            const nomeLider = dados.lider;
+            const souLider = nomeLider === usernameAtual;
+            mostrarMensagemFlutuante('👑 ' + nomeLider + ' é o Líder desta rodada!');
+
+            // Atualiza painel de evento antes para não-líderes
+            const painelLiderAntes = document.getElementById('painel-evento-antes');
+            if (painelLiderAntes && !souLider) {
+                painelLiderAntes.innerHTML = `
+                    <div class="decisao-card">
+                        <h3>👑 Líder Eleito!</h3>
+                        <p style="text-align:center;color:var(--destaque);font-size:1.2rem;">
+                            ${nomeLider} é o Líder!
+                        </p>
+                        <p style="color:var(--texto-fraco);text-align:center;margin-top:8px;">
+                            Aguardando o líder distribuir as moedas...
+                        </p>
+                    </div>
+                `;
             }
-            break;
+        break;
         case 'RESULTADO_EVENTO':
              mostrarResultadoEvento(dados);
             break;
         case 'REVELACAO':
-            // Reseta TUDO para próxima rodada
             jaConfirmouDecisao = false;
             jaMostrouDecisaoEvento = false;
             eventoAtual = null;
+            window._eventoDepoisPendente = null; // limpa evento pendente
 
             estadoAtual = dados;
             atualizarMesa(dados);
@@ -450,6 +454,16 @@ async function confirmarDecisao() {
     document.getElementById('btn-confirmar').disabled = true;
     document.getElementById('btn-confirmar').textContent = '✅ Aguardando...';
     document.getElementById('decisao-erro').textContent = '';
+
+    // Reexibe evento após decisão se estiver pendente
+    if (window._eventoDepoisPendente) {
+        setTimeout(() => {
+            const painel = document.getElementById('painel-evento-extra');
+            if (painel && painel.innerHTML === '') {
+                mostrarInterfaceEvento(window._eventoDepoisPendente);
+            }
+        }, 300);
+    }
 }
 
 // =============================================
@@ -1212,9 +1226,28 @@ function mostrarInterfaceDuplicata(evento, painel) {
 }
 
 async function escolherDuplicata(opcao) {
-    await enviarAcaoEvento({ tipo: 'DUPLICATA', acao: opcao });
-    document.getElementById('painel-evento-extra').innerHTML =
-        `<p class="evento-info-neutro">✅ Duplicata registrada!</p>`;
+    const resp = await enviarAcaoEvento({ tipo: 'DUPLICATA', acao: opcao });
+
+    const painel = document.getElementById('painel-evento-extra') ||
+                   document.getElementById('conteudo-evento-antes');
+
+    if (painel) {
+        const msg = resp?.mensagem || '✅ Duplicata registrada!';
+        const cor = resp?.dobrou === true ? 'var(--sucesso)' :
+                    resp?.dobrou === false ? 'var(--perigo)' : 'var(--texto-fraco)';
+
+        painel.innerHTML = `
+            <div style="text-align:center; padding:16px;">
+                <div style="font-size:2rem; margin-bottom:12px;">
+                    ${resp?.dobrou === true ? '✅' : resp?.dobrou === false ? '❌' : '⚪'}
+                </div>
+                <p style="color:${cor}; font-size:1rem; font-weight:bold;">
+                    ${msg}
+                </p>
+            </div>
+        `;
+    }
+    sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceExposicao(evento, painel) {
@@ -1252,19 +1285,11 @@ async function recusarExposicao() {
 }
 
 function mostrarInterfaceLideranca(evento, painel) {
-    painel.innerHTML = `
-        <div class="evento-interface">
-            <p>👑 <strong>Liderança!</strong> Vote em quem deve ser o Líder:</p>
-            <p class="evento-aviso">O Líder receberá todas as moedas e decidirá
-               o destino de cada uma!</p>
-            ${seletorJogadores(false)}
-            <button class="btn-evento-acao" onclick="votarLideranca()">
-                👑 Votar
-            </button>
-            <div id="placar-lideranca" style="margin-top:12px;
-                color:var(--texto-fraco); font-size:0.85rem;"></div>
-        </div>
-    `;
+    if (!evento.souExecutor) {
+        painel.innerHTML = `<p class="evento-info-neutro">
+            👑 Aguardando o Líder ser revelado...
+        </p>`;
+    }
 }
 
 async function votarLideranca() {

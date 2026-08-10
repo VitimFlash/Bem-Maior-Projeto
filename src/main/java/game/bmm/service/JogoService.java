@@ -294,8 +294,12 @@ public class JogoService {
     }
 
     private Rodada buscarRodadaAtiva(Sala sala) {
-        return rodadaRepository.findBySalaAndStatus(sala, "AGUARDANDO_DECISOES")
-                .orElseThrow(() -> new RuntimeException("Nenhuma rodada ativa."));
+        List<Rodada> rodadas = rodadaRepository
+                .findBySalaAndStatusOrderByNumeroDesc(sala, "AGUARDANDO_DECISOES");
+        if (rodadas.isEmpty()) {
+            throw new RuntimeException("Nenhuma rodada ativa.");
+        }
+        return rodadas.get(0); // pega a mais recente
     }
 
     public EstadoSala iniciarRodadaERetornarEstado(String codigoSala) {
@@ -319,9 +323,9 @@ public class JogoService {
     }
 
     public Map<String, Object> processarAcaoEvento(String codigoSala,
-                                                   String username, String tipo, String acao, String alvoUsername) {
-
-        Sala sala = buscarSala(codigoSala);
+                                                   String username, String tipo, String acao,
+                                                   String alvoUsername, Map<String, Object> dadosExtras) {
+    Sala sala = buscarSala(codigoSala);
         Jogador executor = buscarJogador(username, sala);
         Jogador alvo = alvoUsername != null && !alvoUsername.isEmpty()
                 ? buscarJogador(alvoUsername, sala)
@@ -366,10 +370,10 @@ public class JogoService {
             }
             case "ROLETA" -> {
                 if ("GIRAR".equals(acao)) {
-                    int resultadoDado = (int) body.getOrDefault("resultado", 0);
+                    int resultadoDado = dadosExtras != null
+                            ? (int) dadosExtras.getOrDefault("resultado", 0) : 0;
                     boolean ganhou = resultadoDado == 1 || resultadoDado == 8;
                     if (ganhou) {
-                        // Multiplica bem-pessoal por 1.5
                         int bemAtual = executor.getBemPessoal();
                         executor.setBemPessoal((int)(bemAtual * 1.5));
                     } else {
@@ -384,10 +388,24 @@ public class JogoService {
                 if ("BEM_PESSOAL".equals(acao)) {
                     boolean dobrou = new java.util.Random().nextBoolean();
                     int bemAtual = executor.getBemPessoal();
-                    executor.setBemPessoal(dobrou ? bemAtual * 2 : bemAtual / 2);
+                    int novoValor = dobrou ? bemAtual * 2 : bemAtual / 2;
+                    executor.setBemPessoal(novoValor);
                     jogadorRepository.save(executor);
                     resultado.put("dobrou", dobrou);
-                    resultado.put("mensagem", dobrou ? "Dobrou!" : "Dividiu por 2!");
+                    resultado.put("bemAntes", bemAtual);
+                    resultado.put("bemDepois", novoValor);
+                    resultado.put("mensagem", dobrou
+                            ? "✅ Sorte! Seu bem-pessoal dobrou: " + bemAtual + " → " + novoValor
+                            : "❌ Azar! Seu bem-pessoal foi dividido: " + bemAtual + " → " + novoValor);
+                } else if ("TRIBUTO".equals(acao)) {
+                    // Será aplicado na fase de decisão — apenas retorna o resultado
+                    boolean dobrou = new java.util.Random().nextBoolean();
+                    resultado.put("dobrou", dobrou);
+                    resultado.put("mensagem", dobrou
+                            ? "✅ Sorte! Seus tributos serão dobrados!"
+                            : "❌ Azar! Seus tributos serão divididos por 2!");
+                } else if ("NENHUM".equals(acao)) {
+                    resultado.put("mensagem", "Você optou por não duplicar nada.");
                 }
             }
             case "EXPOSICAO" -> {
@@ -512,8 +530,12 @@ public class JogoService {
                 info.souPortador = idAtual.equals(alvoId);
                 System.out.println("BOMBA - souPortador: " + info.souPortador);
             }
+            case "LIDERANCA" -> {
+                info.souExecutor = idAtual.equals(alvoId);
+                System.out.println("LIDERANCA - souLider: " + info.souExecutor);
+            }
             case "ROLETA", "DUPLICATA", "OSMOSE",
-                 "COPIA", "IGUALDADE", "LIDERANCA" -> {
+                 "COPIA", "IGUALDADE" -> {
                 info.souExecutor = true;
             }
         }

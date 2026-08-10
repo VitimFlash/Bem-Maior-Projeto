@@ -27,24 +27,26 @@ public class JogoController {
     @Autowired private VotacaoService votacaoService;
     @Autowired private DecisaoRepository decisaoRepository;
 
+    private final Map<String, String> liderEleito =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    // =============================================
+    // REST ENDPOINTS
+    // =============================================
     @RestController
     @RequestMapping("/jogo")
     class JogoRestController {
-        // Armazena votos de liderança por sala
-        private final Map<String, Map<String, Integer>> votosLideranca = new java.util.concurrent.ConcurrentHashMap<>();
-        // Armazena líder eleito por sala
-        private final Map<String, String> liderEleito = new java.util.concurrent.ConcurrentHashMap<>();
 
         @PostMapping("/iniciar-rodada")
         public ResponseEntity<?> iniciarRodada(@RequestBody Map<String, String> body) {
             try {
-                String codigo = body.get("codigo");
-                iniciarNovaRodada(codigo);
+                iniciarNovaRodada(body.get("codigo"));
                 return ResponseEntity.ok("Rodada iniciada!");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return ResponseEntity.badRequest().body("Interrompido.");
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
             }
         }
 
@@ -59,10 +61,8 @@ public class JogoController {
                 String username = auth.getName();
 
                 Map<String, Object> resultado = jogoService.processarAcaoEvento(
-                        codigoSala, username, tipo, acao, alvo
-                );
+                        codigoSala, username, tipo, acao, alvo, body);
 
-                // Notifica todos se necessário
                 if (resultado.containsKey("notificarSala")) {
                     EstadoSala estado = jogoService.montarEstadoSala(codigoSala);
                     estado.setMensagem((String) resultado.get("mensagemSala"));
@@ -81,12 +81,8 @@ public class JogoController {
             try {
                 EstadoSala estadoSala = jogoService.montarEstadoSala(codigo);
                 EstadoJogador estadoJogador = jogoService.montarEstadoJogador(
-                        codigo, auth.getName()
-                );
-                return ResponseEntity.ok(Map.of(
-                        "sala", estadoSala,
-                        "jogador", estadoJogador
-                ));
+                        codigo, auth.getName());
+                return ResponseEntity.ok(Map.of("sala", estadoSala, "jogador", estadoJogador));
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
             }
@@ -106,67 +102,7 @@ public class JogoController {
             try {
                 Sala sala = salaRepository.findByCodigo(codigo)
                         .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
-                return ResponseEntity.ok(
-                        rodadaRepository.findBySalaOrderByNumeroAsc(sala)
-                );
-            } catch (RuntimeException e) {
-                return ResponseEntity.badRequest().body(e.getMessage());
-            }
-        }
-
-        @PostMapping("/evento/lideranca/votar")
-        public ResponseEntity<?> votarLideranca(@RequestBody Map<String, Object> body,
-                                                Authentication auth) {
-            try {
-                String codigoSala = (String) body.get("codigoSala");
-                String alvo = (String) body.get("alvo");
-                String username = auth.getName();
-
-                // Registra voto
-                votosLideranca.computeIfAbsent(codigoSala,
-                                k -> new java.util.concurrent.ConcurrentHashMap<>())
-                        .merge(alvo, 1, Integer::sum);
-
-                Map<String, Integer> votos = votosLideranca.get(codigoSala);
-
-                // Notifica todos com placar atualizado
-                MensagemLiderancaVotos msg = new MensagemLiderancaVotos();
-                msg.votos = votos;
-                mensageiro.convertAndSend("/topic/sala/" + codigoSala, msg);
-
-                // Verifica se todos votaram
-                Sala sala = salaRepository.findByCodigo(codigoSala)
-                        .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
-                List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
-
-                int totalVotos = votos.values().stream().mapToInt(Integer::intValue).sum();
-
-                if (totalVotos >= ativos.size()) {
-                    // Elege o líder
-                    String lider = votos.entrySet().stream()
-                            .max(Map.Entry.comparingByValue())
-                            .map(Map.Entry::getKey)
-                            .orElse(ativos.get(0).getUsuario().getUsername());
-
-                    liderEleito.put(codigoSala, lider);
-
-                    // Notifica todos quem é o líder
-                    MensagemLiderEleito msgLider = new MensagemLiderEleito();
-                    msgLider.lider = lider;
-                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgLider);
-
-                    // Envia tela de distribuição APENAS para o líder
-                    EstadoSala estadoLider = jogoService.montarEstadoSala(codigoSala);
-                    estadoLider.setFase("LIDERANCA_DISTRIBUIR");
-                    estadoLider.setMensagem("👑 Você é o Líder! Distribua as moedas.");
-                    mensageiro.convertAndSendToUser(lider,
-                            "/queue/estado-jogador-evento", estadoLider);
-
-                    // Limpa votos
-                    votosLideranca.remove(codigoSala);
-                }
-
-                return ResponseEntity.ok(Map.of("votosAtuais", votos));
+                return ResponseEntity.ok(rodadaRepository.findBySalaOrderByNumeroAsc(sala));
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
             }
@@ -186,19 +122,22 @@ public class JogoController {
                         .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
                 List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
 
-                // Cria decisões para todos os jogadores baseadas na distribuição do líder
-                Rodada rodada = rodadaRepository
-                        .findBySalaAndStatus(sala, "AGUARDANDO_DECISOES")
-                        .orElseThrow(() -> new RuntimeException("Rodada nao encontrada."));
+                // Busca rodada ativa
+                List<Rodada> rodadasAtivas = rodadaRepository
+                        .findBySalaAndStatusOrderByNumeroDesc(sala, "AGUARDANDO_DECISOES");
+                if (rodadasAtivas.isEmpty()) {
+                    throw new RuntimeException("Rodada nao encontrada.");
+                }
+                Rodada rodada = rodadasAtivas.get(0);
 
+                // Cria decisões para todos baseadas na distribuição do líder
                 for (Jogador jogador : ativos) {
                     String username = jogador.getUsuario().getUsername();
-                    if (distribuicao.containsKey(username)) {
+                    if (distribuicao != null && distribuicao.containsKey(username)) {
                         Map<String, Integer> valores = distribuicao.get(username);
                         int tributo = valores.getOrDefault("tributo", 0);
                         int bem = valores.getOrDefault("bemPessoal", 0);
 
-                        // Salva decisão do líder para este jogador
                         Decisao decisao = new Decisao();
                         decisao.setJogador(jogador);
                         decisao.setRodada(rodada);
@@ -206,18 +145,17 @@ public class JogoController {
                         decisao.setMoedasBemPessoal(bem);
                         decisaoRepository.save(decisao);
 
-                        // Atualiza bem-pessoal
                         jogador.setBemPessoal(jogador.getBemPessoal() + bem);
                         jogadorRepository.save(jogador);
                     }
                 }
 
-                // Notifica todos
+                // Remove líder e notifica todos
+                liderEleito.remove(codigoSala);
+
                 EstadoSala estado = jogoService.montarEstadoSala(codigoSala);
                 estado.setMensagem("👑 O Líder distribuiu as moedas desta rodada!");
                 mensageiro.convertAndSend("/topic/sala/" + codigoSala, estado);
-
-                liderEleito.remove(codigoSala);
 
                 // Processa a rodada automaticamente
                 new Thread(() -> {
@@ -236,7 +174,9 @@ public class JogoController {
         }
     }
 
-    // Recebe decisão do jogador via WebSocket
+    // =============================================
+    // WEBSOCKET — RECEBER DECISÃO
+    // =============================================
     @MessageMapping("/jogo/{codigoSala}/decisao")
     public void receberDecisao(@DestinationVariable String codigoSala,
                                Map<String, Object> body,
@@ -251,7 +191,7 @@ public class JogoController {
             System.out.println("Tributo: " + moedasTributo + " Bem: " + moedasBemPessoal);
 
             jogoService.registrarDecisao(codigoSala, username, moedasTributo, moedasBemPessoal);
-            System.out.println("Decisao registrada com sucesso!");
+            System.out.println("Decisao registrada!");
 
             boolean todos = jogoService.todosDecidiram(codigoSala);
             System.out.println("Todos decidiram: " + todos);
@@ -270,22 +210,65 @@ public class JogoController {
             }
         } catch (Exception e) {
             System.err.println("=== ERRO EM receberDecisao ===");
-            System.err.println(e.getMessage());
             e.printStackTrace();
         }
     }
 
-    // Processa rodada após todos decidirem
+    // =============================================
+    // PROCESSAR RODADA
+    // =============================================
     private void processarRodada(String codigoSala) {
         new Thread(() -> {
             try {
                 System.out.println("=== THREAD processarRodada INICIADA ===");
+
+                // Verifica Bolha/Fogueira ANTES de processar tributos
+                Sala salaEv = salaRepository.findByCodigo(codigoSala)
+                        .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
+                List<Rodada> rodadasAtivas = rodadaRepository
+                        .findBySalaAndStatusOrderByNumeroDesc(salaEv, "AGUARDANDO_DECISOES");
+                Rodada rodadaAtualEv = rodadasAtivas.isEmpty() ? null : rodadasAtivas.get(0);
+
+                if (rodadaAtualEv != null && rodadaAtualEv.getEvento() != null) {
+                    Evento ev = rodadaAtualEv.getEvento();
+                    List<Jogador> ativosEv = jogadorRepository.findBySalaAndAtivoTrue(salaEv);
+
+                    if ("BOLHA".equals(ev.getTipo()) || "FOGUEIRA".equals(ev.getTipo())) {
+                        List<Decisao> decisoesEv = decisaoRepository.findByRodada(rodadaAtualEv);
+                        int totalBemPessoal = decisoesEv.stream()
+                                .mapToInt(Decisao::getMoedasBemPessoal).sum();
+
+                        Jogador sorteado = ativosEv.get(
+                                new java.util.Random().nextInt(ativosEv.size()));
+
+                        MensagemResultadoEvento msgEv = new MensagemResultadoEvento();
+
+                        if ("BOLHA".equals(ev.getTipo())) {
+                            sorteado.setBemPessoal(sorteado.getBemPessoal() + totalBemPessoal);
+                            jogadorRepository.save(sorteado);
+                            msgEv.nomeEvento = "BOLHA";
+                            msgEv.emoji = "🫧";
+                            msgEv.mensagem = "🫧 A bolha estourou! " +
+                                    sorteado.getUsuario().getUsername() +
+                                    " recebeu " + totalBemPessoal + " moedas no bem-pessoal!";
+                        } else {
+                            sorteado.setBemPessoal(sorteado.getBemPessoal() - totalBemPessoal);
+                            jogadorRepository.save(sorteado);
+                            msgEv.nomeEvento = "FOGUEIRA";
+                            msgEv.emoji = "🔥";
+                            msgEv.mensagem = "🔥 A fogueira apagou! " +
+                                    sorteado.getUsuario().getUsername() +
+                                    " perdeu " + totalBemPessoal + " moedas do bem-pessoal!";
+                        }
+
+                        mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgEv);
+                        Thread.sleep(5000);
+                    }
+                }
+
+                // Processa tributos
                 Tributo tributo = jogoService.processarTributos(codigoSala);
                 System.out.println("Tributos OK: " + tributo.getTotalArrecadado());
-
-                // 1 — Processa tributos
-                System.out.println("Processando tributos...");
-                System.out.println("Tributos processados: " + tributo.getTotalArrecadado());
 
                 EstadoSala estadoRevelacao = jogoService.montarEstadoSala(codigoSala);
                 estadoRevelacao.setFase("REVELACAO");
@@ -293,107 +276,38 @@ public class JogoController {
                         "🏛️ Tributos: " + tributo.getTotalArrecadado() +
                                 " moedas! Cada jogador recebeu " +
                                 tributo.getPorJogador() + " 🪙. " +
-                                tributo.getDescartado() + " descartadas."
-                );
+                                tributo.getDescartado() + " descartadas.");
                 mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoRevelacao);
-                System.out.println("Revelação enviada!");
 
-                // 2 — Pausa de 5 segundos
                 Thread.sleep(5000);
 
-                // 3 — Avança rodada
-                System.out.println("Avançando rodada...");
                 boolean continua = jogoService.avancarRodada(codigoSala);
                 System.out.println("Continua: " + continua);
 
                 if (!continua) {
-                    System.out.println("Jogo finalizado!");
                     EstadoSala estadoFinal = jogoService.montarEstadoFinal(codigoSala);
                     mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoFinal);
                     return;
                 }
 
-                // 4 — Inicia discussão da próxima rodada
-                System.out.println("Iniciando discussão...");
                 iniciarFaseDiscussao(codigoSala);
-
-                // Após processarTributos, verifica evento especial
-                Rodada rodadaConcluida = rodadaRepository
-                        .findBySalaAndStatus(
-                                salaRepository.findByCodigo(codigoSala).orElseThrow(),
-                                "CONCLUIDA"
-                        ).orElse(null);
-
-                if (rodadaConcluida != null && rodadaConcluida.getEvento() != null) {
-                    Evento ev = rodadaConcluida.getEvento();
-                    Sala salaEv = salaRepository.findByCodigo(codigoSala).orElseThrow();
-                    List<Jogador> ativosEv = jogadorRepository.findBySalaAndAtivoTrue(salaEv);
-
-                    if ("BOLHA".equals(ev.getTipo()) || "FOGUEIRA".equals(ev.getTipo())) {
-                        // Calcula total do bem-pessoal colocado nesta rodada
-                        List<Decisao> decisoesEv = decisaoRepository.findByRodada(rodadaConcluida);
-                        int totalBemPessoal = decisoesEv.stream()
-                                .mapToInt(Decisao::getMoedasBemPessoal)
-                                .sum();
-
-                        ev.setValorEfeito(totalBemPessoal);
-
-                        // Sorteia jogador
-                        Jogador sorteado = ativosEv.get(
-                                new java.util.Random().nextInt(ativosEv.size())
-                        );
-
-                        if ("BOLHA".equals(ev.getTipo())) {
-                            sorteado.setBemPessoal(sorteado.getBemPessoal() + totalBemPessoal);
-                            jogadorRepository.save(sorteado);
-
-                            // Notifica resultado da bolha por 5 segundos
-                            MensagemResultadoEvento msgBolha = new MensagemResultadoEvento();
-                            msgBolha.nomeEvento = "BOLHA";
-                            msgBolha.emoji = "🫧";
-                            msgBolha.mensagem = "🫧 A bolha estourou! " +
-                                    sorteado.getUsuario().getUsername() +
-                                    " recebeu " + totalBemPessoal + " moedas no bem-pessoal!";
-                            mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgBolha);
-                            Thread.sleep(5000);
-
-                        } else { // FOGUEIRA
-                            sorteado.setBemPessoal(sorteado.getBemPessoal() - totalBemPessoal);
-                            jogadorRepository.save(sorteado);
-
-                            MensagemResultadoEvento msgFogueira = new MensagemResultadoEvento();
-                            msgFogueira.nomeEvento = "FOGUEIRA";
-                            msgFogueira.emoji = "🔥";
-                            msgFogueira.mensagem = "🔥 A fogueira apagou! " +
-                                    sorteado.getUsuario().getUsername() +
-                                    " perdeu " + totalBemPessoal + " moedas do bem-pessoal!";
-                            mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgFogueira);
-                            Thread.sleep(5000);
-                        }
-                    }
-                }
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 System.err.println("Thread interrompida: " + e.getMessage());
             } catch (Exception e) {
                 System.err.println("=== ERRO EM processarRodada ===");
-                System.err.println("Mensagem: " + e.getMessage());
                 e.printStackTrace();
             }
         }).start();
     }
 
-
-
-    // Inicia nova rodada com evento se necessário
+    // =============================================
+    // INICIAR NOVA RODADA
+    // =============================================
     public void iniciarNovaRodada(String codigoSala) throws InterruptedException {
         try {
-            Sala sala = salaRepository.findByCodigo(codigoSala)
-                    .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
-
             iniciarFaseDiscussao(codigoSala);
-
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw e;
@@ -403,6 +317,9 @@ public class JogoController {
         }
     }
 
+    // =============================================
+    // FASE DE DISCUSSÃO
+    // =============================================
     private void iniciarFaseDiscussao(String codigoSala) throws InterruptedException {
         Sala sala = salaRepository.findByCodigo(codigoSala)
                 .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
@@ -413,17 +330,13 @@ public class JogoController {
         estadoDiscussao.setFase("DISCUSSAO");
         estadoDiscussao.setTempoDiscussao(30);
         estadoDiscussao.setPodeVotar(podeVotar);
-        estadoDiscussao.setMensagem(
-                podeVotar
-                        ? "💬 Tempo de discussão! Você pode votar para eliminar alguém."
-                        : "💬 Tempo de discussão! A votação estará disponível após a metade do jogo."
-        );
+        estadoDiscussao.setMensagem(podeVotar
+                ? "💬 Tempo de discussão! Você pode votar para eliminar alguém."
+                : "💬 Tempo de discussão! A votação estará disponível após a metade do jogo.");
         mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDiscussao);
 
-        // Aguarda 30 segundos
         Thread.sleep(30000);
 
-        // Processa resultado da votação se puder votar
         if (podeVotar) {
             VotacaoService.ResultadoVotacao resultado =
                     votacaoService.processarResultado(codigoSala);
@@ -438,21 +351,26 @@ public class JogoController {
             Thread.sleep(3000);
         }
 
-        // Inicia evento e decisão
         iniciarEventoERodada(codigoSala);
     }
 
+    // =============================================
+    // INICIAR EVENTO E RODADA
+    // =============================================
     private void iniciarEventoERodada(String codigoSala) throws InterruptedException {
         Sala sala = salaRepository.findByCodigo(codigoSala)
                 .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
         List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
 
+        System.out.println("=== SORTEANDO EVENTO PARA RODADA " + sala.getRodadaAtual() + " ===");
+
         // Cria rodada
         jogoService.iniciarRodadaERetornarEstado(codigoSala);
 
-        Rodada rodadaAtiva = rodadaRepository
-                .findBySalaAndStatus(sala, "AGUARDANDO_DECISOES")
-                .orElse(null);
+        // Busca rodada ativa recém-criada
+        List<Rodada> rodadasAtivasList = rodadaRepository
+                .findBySalaAndStatusOrderByNumeroDesc(sala, "AGUARDANDO_DECISOES");
+        Rodada rodadaAtiva = rodadasAtivasList.isEmpty() ? null : rodadasAtivasList.get(0);
 
         Evento eventoSorteado = null;
 
@@ -466,51 +384,71 @@ public class JogoController {
                 String descricao = eventoService.gerarDescricao(eventoSorteado, ativos);
                 eventoSorteado.setDescricao(descricao);
 
-                // Anuncia evento para todos
-                EstadoSala estadoEvento = jogoService.montarEstadoSala(codigoSala);
-                estadoEvento.setFase("EVENTO");
-                estadoEvento.setMensagem("⚡ " + eventoSorteado.getTipo());
+                final Evento eventoFinal = eventoSorteado;
 
                 // Envia estado personalizado para cada jogador
                 for (Jogador jogador : ativos) {
                     String username = jogador.getUsuario().getUsername();
-                    EstadoSala estadoPersonalizado =
-                            jogoService.montarEstadoSala(codigoSala);
+                    EstadoSala estadoPersonalizado = jogoService.montarEstadoSala(codigoSala);
                     estadoPersonalizado.setFase("EVENTO");
-                    estadoPersonalizado.setMensagem("⚡ " + eventoSorteado.getTipo());
+                    estadoPersonalizado.setMensagem("⚡ " + eventoFinal.getTipo());
 
                     EstadoSala.EventoInfo info = jogoService
-                            .montarInfoEventoParaJogador(eventoSorteado, username, sala);
+                            .montarInfoEventoParaJogador(eventoFinal, username, sala);
                     estadoPersonalizado.setEventoAtualInfo(info);
 
-                    mensageiro.convertAndSendToUser(
-                            username,
-                            "/queue/estado-jogador-evento",
-                            estadoPersonalizado
-                    );
+                    mensageiro.convertAndSendToUser(username,
+                            "/queue/estado-jogador-evento", estadoPersonalizado);
                 }
 
                 // Aguarda 8 segundos de animação
                 Thread.sleep(8000);
 
+                // Tratamento especial para LIDERANÇA
+                if ("LIDERANCA".equals(eventoFinal.getTipo())) {
+                    final String nomeLider = ativos.stream()
+                            .filter(j -> j.getId().toString().equals(eventoFinal.getJogadorAlvoId()))
+                            .map(j -> j.getUsuario().getUsername())
+                            .findFirst()
+                            .orElse(ativos.get(0).getUsuario().getUsername());
+
+                    liderEleito.put(codigoSala, nomeLider);
+
+                    MensagemLiderEleito msgLider = new MensagemLiderEleito();
+                    msgLider.lider = nomeLider;
+                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgLider);
+
+                    Thread.sleep(3000);
+
+                    EstadoSala estadoLider = jogoService.montarEstadoSala(codigoSala);
+                    estadoLider.setFase("LIDERANCA_DISTRIBUIR");
+                    estadoLider.setMensagem("👑 Você é o Líder! Distribua as moedas.");
+                    mensageiro.convertAndSendToUser(nomeLider,
+                            "/queue/estado-jogador-evento", estadoLider);
+
+                    // Aguarda até 60 segundos para o líder distribuir
+                    int tentativas = 0;
+                    while (liderEleito.containsKey(codigoSala) && tentativas < 60) {
+                        Thread.sleep(1000);
+                        tentativas++;
+                    }
+                    return; // Liderança substitui a decisão normal
+                }
+
                 // Se evento decide ANTES das moedas, envia fase de decisão do evento
-                if (jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo())) {
+                if (jogoService.eventoDecideAntesDasMoedas(eventoFinal.getTipo())) {
                     for (Jogador jogador : ativos) {
                         String username = jogador.getUsuario().getUsername();
-                        EstadoSala estadoDecisaoEvento =
-                                jogoService.montarEstadoSala(codigoSala);
+                        EstadoSala estadoDecisaoEvento = jogoService.montarEstadoSala(codigoSala);
                         estadoDecisaoEvento.setFase("DECISAO_EVENTO_ANTES");
                         estadoDecisaoEvento.setDecisaoEventoAntes(true);
 
                         EstadoSala.EventoInfo info = jogoService
-                                .montarInfoEventoParaJogador(eventoSorteado, username, sala);
+                                .montarInfoEventoParaJogador(eventoFinal, username, sala);
                         estadoDecisaoEvento.setEventoAtualInfo(info);
 
-                        mensageiro.convertAndSendToUser(
-                                username,
-                                "/queue/estado-jogador-evento",
-                                estadoDecisaoEvento
-                        );
+                        mensageiro.convertAndSendToUser(username,
+                                "/queue/estado-jogador-evento", estadoDecisaoEvento);
                     }
                     // Aguarda 30 segundos para decisão do evento
                     Thread.sleep(30000);
@@ -518,33 +456,12 @@ public class JogoController {
             }
         }
 
-        boolean eventoSubstituiDecisao = eventoSorteado != null &&
-                "LIDERANCA".equals(eventoSorteado.getTipo());
-
-        if (!eventoSubstituiDecisao) {
-            // Inicia fase de decisão normal
-            EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
-            estadoDecisao.setFase("DECISAO");
-            estadoDecisao.setMensagem("Rodada " + sala.getRodadaAtual() +
-                    " iniciada! Faça sua escolha.");
-            if (eventoSorteado != null &&
-                    !jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo())) {
-                estadoDecisao.setDecisaoEventoDepois(true);
-                EstadoSala.EventoInfo info = new EstadoSala.EventoInfo();
-                info.tipo = eventoSorteado.getTipo();
-                info.requerDecisao = eventoSorteado.isRequerDecisao();
-                estadoDecisao.setEventoAtualInfo(info);
-            }
-            mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDecisao);
-        }
-
-        // Envia fase de decisão das moedas
+        // Inicia fase de decisão normal das moedas
         EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
         estadoDecisao.setFase("DECISAO");
-        estadoDecisao.setMensagem("Rodada " + sala.getRodadaAtual() +
-                " iniciada! Faça sua escolha.");
+        estadoDecisao.setMensagem("Rodada " + sala.getRodadaAtual() + " iniciada! Faça sua escolha.");
 
-        // Se tem evento que decide DEPOIS, informa o frontend
+        // Evento que decide DEPOIS das moedas
         if (eventoSorteado != null &&
                 !jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo())) {
             estadoDecisao.setDecisaoEventoDepois(true);
@@ -557,11 +474,9 @@ public class JogoController {
         mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDecisao);
     }
 
-    static class MensagemLiderancaVotos {
-        public String tipo = "LIDERANCA_VOTOS";
-        public java.util.Map<String, Integer> votos;
-    }
-
+    // =============================================
+    // CLASSES AUXILIARES
+    // =============================================
     static class MensagemLiderEleito {
         public String tipo = "LIDER_ELEITO";
         public String lider;
