@@ -148,4 +148,5 @@ public class EventoService {
     public boolean deveHaverEvento(int rodadaAtual) {
         return rodadaAtual >= RODADA_MINIMA_EVENTO;
     }
+
 }
