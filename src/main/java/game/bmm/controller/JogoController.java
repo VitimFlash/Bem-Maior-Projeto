@@ -326,6 +326,8 @@ public class JogoController {
 
         boolean podeVotar = sala.getRodadaAtual() > sala.getTotalRodadas() / 2;
 
+        Thread.sleep(1000);
+
         EstadoSala estadoDiscussao = jogoService.montarEstadoSala(codigoSala);
         estadoDiscussao.setFase("DISCUSSAO");
         estadoDiscussao.setTempoDiscussao(30);
@@ -407,7 +409,8 @@ public class JogoController {
                 // Tratamento especial para LIDERANÇA
                 if ("LIDERANCA".equals(eventoFinal.getTipo())) {
                     final String nomeLider = ativos.stream()
-                            .filter(j -> j.getId().toString().equals(eventoFinal.getJogadorAlvoId()))
+                            .filter(j -> j.getId().toString()
+                                    .equals(eventoFinal.getJogadorAlvoId()))
                             .map(j -> j.getUsuario().getUsername())
                             .findFirst()
                             .orElse(ativos.get(0).getUsuario().getUsername());
@@ -426,20 +429,20 @@ public class JogoController {
                     mensageiro.convertAndSendToUser(nomeLider,
                             "/queue/estado-jogador-evento", estadoLider);
 
-                    // Aguarda até 60 segundos para o líder distribuir
                     int tentativas = 0;
                     while (liderEleito.containsKey(codigoSala) && tentativas < 60) {
                         Thread.sleep(1000);
                         tentativas++;
                     }
-                    return; // Liderança substitui a decisão normal
+                    return;
                 }
 
-                // Se evento decide ANTES das moedas, envia fase de decisão do evento
+                // Se evento decide ANTES das moedas
                 if (jogoService.eventoDecideAntesDasMoedas(eventoFinal.getTipo())) {
                     for (Jogador jogador : ativos) {
                         String username = jogador.getUsuario().getUsername();
-                        EstadoSala estadoDecisaoEvento = jogoService.montarEstadoSala(codigoSala);
+                        EstadoSala estadoDecisaoEvento =
+                                jogoService.montarEstadoSala(codigoSala);
                         estadoDecisaoEvento.setFase("DECISAO_EVENTO_ANTES");
                         estadoDecisaoEvento.setDecisaoEventoAntes(true);
 
@@ -450,8 +453,8 @@ public class JogoController {
                         mensageiro.convertAndSendToUser(username,
                                 "/queue/estado-jogador-evento", estadoDecisaoEvento);
                     }
-                    // Aguarda 30 segundos para decisão do evento
-                    Thread.sleep(30000);
+                    // Aguarda 45 segundos para decisão do evento
+                    Thread.sleep(45000);
                 }
             }
         }
@@ -459,11 +462,15 @@ public class JogoController {
         // Inicia fase de decisão normal das moedas
         EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
         estadoDecisao.setFase("DECISAO");
-        estadoDecisao.setMensagem("Rodada " + sala.getRodadaAtual() + " iniciada! Faça sua escolha.");
+        estadoDecisao.setMensagem("Rodada " + sala.getRodadaAtual() +
+                " iniciada! Faça sua escolha.");
 
-        // Evento que decide DEPOIS das moedas
+        // Evento que decide DEPOIS das moedas (Roleta, Duplicata, Exposição, Traição)
         if (eventoSorteado != null &&
-                !jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo())) {
+                !jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo()) &&
+                !"LIDERANCA".equals(eventoSorteado.getTipo()) &&
+                !"BOLHA".equals(eventoSorteado.getTipo()) &&
+                !"FOGUEIRA".equals(eventoSorteado.getTipo())) {
             estadoDecisao.setDecisaoEventoDepois(true);
             EstadoSala.EventoInfo info = new EstadoSala.EventoInfo();
             info.tipo = eventoSorteado.getTipo();

@@ -49,10 +49,6 @@ function conectarWebSocket() {
                 const dados = JSON.parse(msg.body);
                 console.log('Evento personalizado:', dados);
 
-                if (dados.fase === 'LIDERANCA_DISTRIBUIR') {
-                    mostrarInterfaceDistribuicaoLider(dados);
-                }
-
                 if (dados.fase === 'EVENTO' && dados.eventoAtualInfo) {
                     mostrarEvento(dados.eventoAtualInfo);
                 }
@@ -61,7 +57,18 @@ function conectarWebSocket() {
                     document.getElementById('painel-decisao').classList.add('escondido');
                     eventoAtual = dados.eventoAtualInfo;
                     eventoPendente = true;
+
+                    // Guarda o estado da sala para usar após o evento
+                    if (dados.contasPessoais) {
+                        estadoAtual = dados;
+                        estadoAtual.fase = 'DECISAO'; // marca para mostrar decisão depois
+                    }
+
                     mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
+                }
+
+                if (dados.fase === 'LIDERANCA_DISTRIBUIR') {
+                    mostrarInterfaceDistribuicaoLider(dados);
                 }
             });
 
@@ -222,7 +229,7 @@ function tratarMensagemSala(dados) {
             jaConfirmouDecisao = false;
             jaMostrouDecisaoEvento = false;
             eventoAtual = null;
-            window._eventoDepoisPendente = null; // limpa evento pendente
+            window._eventoDepoisPendente = null;
 
             estadoAtual = dados;
             atualizarMesa(dados);
@@ -231,17 +238,18 @@ function tratarMensagemSala(dados) {
 
             document.getElementById('painel-decisao').classList.add('escondido');
 
-            const painelAntesRev = document.getElementById('painel-evento-antes');
-            if (painelAntesRev) painelAntesRev.remove();
+            const painelAntesRev2 = document.getElementById('painel-evento-antes');
+            if (painelAntesRev2) painelAntesRev2.remove();
 
-            const painelDiscRev = document.getElementById('painel-discussao');
-            if (painelDiscRev) painelDiscRev.remove();
+            const painelDiscRev2 = document.getElementById('painel-discussao');
+            if (painelDiscRev2) painelDiscRev2.remove();
 
-            const painelExtra = document.getElementById('painel-evento-extra');
-            if (painelExtra) {
-                painelExtra.innerHTML = '';
-                painelExtra.classList.add('escondido');
+            const painelExtraRev2 = document.getElementById('painel-evento-extra');
+            if (painelExtraRev2) {
+                painelExtraRev2.innerHTML = '';
+                painelExtraRev2.classList.add('escondido');
             }
+            return;
             break;
 
         case 'VOTACAO_ABERTA':
@@ -263,18 +271,22 @@ function tratarMensagemSala(dados) {
             break;
 
         default:
-            if (dados.contasPessoais) {
+             if (dados.contasPessoais) {
                 estadoAtual = dados;
                 atualizarMesa(dados);
                 atualizarInfoRodada(dados);
-                if (dados.fase === 'DECISAO' || dados.fase === 'EM_JOGO') {
-                    if (!jaConfirmouDecisao) mostrarFaseDecisao(dados);
+                // Se fase é DECISAO e ainda não confirmou, mostra painel
+                if ((dados.fase === 'DECISAO' || dados.fase === 'EM_JOGO')
+                    && !jaConfirmouDecisao) {
+                    mostrarFaseDecisao(dados);
                 }
             }
             break;
     }
 
-    if (dados.mensagem) mostrarMensagemFlutuante(dados.mensagem);
+    if (dados.mensagem && tipo !== 'REVELACAO') {
+        mostrarMensagemFlutuante(dados.mensagem);
+    }
     if (dados.meta) {
         document.getElementById('meta-valor').textContent = dados.meta + ' 🪙';
         document.getElementById('meta-placar-valor').textContent = dados.meta;
@@ -749,6 +761,34 @@ function mostrarResultadoEvento(dados) {
     }, 1000);
 }
 
+function mostrarCronometro(segundos) {
+    const anterior = document.getElementById('cronometro-evento-fixo');
+    if (anterior) anterior.remove();
+
+    const el = document.createElement('div');
+    el.id = 'cronometro-evento-fixo';
+    el.style.cssText = `
+        position: fixed; bottom: 24px; right: 24px;
+        background: var(--destaque);
+        border-radius: 16px; padding: 16px 28px;
+        text-align: center; z-index: 9999;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        min-width: 120px;
+    `;
+    el.innerHTML = `
+        <div style="font-size:0.8rem;color:#0f1923;margin-bottom:4px;
+            font-weight:bold;">⏱️ Tempo restante</div>
+        <div id="cronometro-valor" style="font-size:3.5rem;
+            font-weight:bold;color:#0f1923;">${segundos}</div>
+    `;
+    document.body.appendChild(el);
+}
+
+function esconderCronometro() {
+    const el = document.getElementById('cronometro-evento-fixo');
+    if (el) el.remove();
+}
+
 // =============================================
 // REVELAÇÃO
 // =============================================
@@ -758,9 +798,235 @@ function mostrarRevelacao(dados) {
     document.getElementById('info-fase').className = 'badge-fase fase-revelacao';
     document.getElementById('btn-confirmar').disabled = false;
     document.getElementById('btn-confirmar').textContent = 'Confirmar';
+
     const caixa = document.getElementById('caixa-tributos');
     caixa.classList.add('revelando');
     setTimeout(() => caixa.classList.remove('revelando'), 1000);
+
+    // Remove painéis
+    ['painel-evento-antes','painel-discussao'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    });
+
+    const tributos = dados.totalTributosRodada || 0;
+    const porJogador = dados.valorDistribuido || 0;
+    const descartado = dados.moedasDescartadas || 0;
+    const nJogadores = Object.keys(dados.contasPessoais || {}).length;
+
+    // Monta lista de jogadores
+    const jogadoresList = Object.entries(dados.contasPessoais || {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([nome, conta]) => {
+            const souEu = nome === usernameAtual;
+            const eliminado = (dados.jogadoresEliminados || []).includes(nome);
+            return `<div style="display:flex;justify-content:space-between;
+                padding:5px 10px;border-radius:6px;margin-bottom:3px;
+                background:${souEu?'rgba(240,192,64,0.1)':'rgba(255,255,255,0.03)'};
+                ${eliminado?'opacity:0.4;':''}">
+                <span style="color:${souEu?'var(--destaque)':'var(--texto)'}">
+                    ${nome}${souEu?' (você)':''}${eliminado?' ☠️':''}
+                </span>
+                <span style="color:var(--destaque);font-weight:bold;">${conta} 🪙</span>
+            </div>`;
+        }).join('');
+
+    // Cria overlay igual ao de evento
+    const overlayAnterior = document.getElementById('overlay-revelacao');
+    if (overlayAnterior) overlayAnterior.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'overlay-revelacao';
+    overlay.className = 'overlay-evento';
+    overlay.innerHTML = `
+        <div class="evento-card" style="max-width:480px;">
+            <div style="font-size:3rem;margin-bottom:8px;">🏛️</div>
+            <h2 style="color:var(--destaque);margin-bottom:16px;">
+                Resultado da Rodada
+            </h2>
+            <div style="display:flex;gap:8px;margin-bottom:16px;">
+                <div style="flex:1;background:rgba(255,255,255,0.05);
+                    border-radius:8px;padding:10px;text-align:center;">
+                    <div style="font-size:0.75rem;color:var(--texto-fraco);
+                        margin-bottom:4px;">💰 Arrecadado</div>
+                    <div style="font-size:1.3rem;font-weight:bold;
+                        color:var(--destaque);">${tributos} 🪙</div>
+                </div>
+                <div style="flex:1;background:rgba(46,204,113,0.08);
+                    border-radius:8px;padding:10px;text-align:center;
+                    border:1px solid rgba(46,204,113,0.2);">
+                    <div style="font-size:0.75rem;color:var(--texto-fraco);
+                        margin-bottom:4px;">📤 Por jogador</div>
+                    <div style="font-size:1.3rem;font-weight:bold;
+                        color:var(--sucesso);">+${porJogador} 🪙</div>
+                </div>
+                <div style="flex:1;background:rgba(231,76,60,0.05);
+                    border-radius:8px;padding:10px;text-align:center;
+                    border:1px solid rgba(231,76,60,0.15);">
+                    <div style="font-size:0.75rem;color:var(--texto-fraco);
+                        margin-bottom:4px;">🗑️ Descartado</div>
+                    <div style="font-size:1.3rem;font-weight:bold;
+                        color:var(--perigo);">${Math.max(0,descartado)} 🪙</div>
+                </div>
+            </div>
+            <div style="margin-bottom:16px;">${jogadoresList}</div>
+            <div style="background:rgba(255,255,255,0.1);
+                border-radius:4px;height:4px;overflow:hidden;">
+                <div id="barra-revelacao" style="height:100%;
+                    background:var(--destaque);width:100%;
+                    transition:width 0.1s linear;"></div>
+            </div>
+            <p style="text-align:center;color:var(--texto-fraco);
+                font-size:0.75rem;margin-top:6px;">
+                Fechando em <span id="countdown-revelacao">8</span>s
+            </p>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // Countdown 8 segundos
+    let seg = 8;
+    const barra = document.getElementById('barra-revelacao');
+    const cd = document.getElementById('countdown-revelacao');
+    const timer = setInterval(() => {
+        seg -= 0.1;
+        if (barra) barra.style.width = Math.max(0,(seg/8)*100) + '%';
+        if (cd) cd.textContent = Math.ceil(seg);
+        if (seg <= 0) {
+            clearInterval(timer);
+            overlay.style.opacity = '0';
+            overlay.style.transition = 'opacity 0.3s';
+            setTimeout(() => overlay.remove(), 300);
+        }
+    }, 100);
+}
+
+function mostrarPopupRevelacao(dados) {
+    // Remove pop-up anterior se existir
+    const anterior = document.getElementById('popup-revelacao');
+    if (anterior) anterior.remove();
+
+    const tributos = dados.totalTributosRodada || 0;
+    const porJogador = dados.valorDistribuido || 0;
+    const descartado = tributos > 0
+        ? (tributos * 2) - (porJogador * Object.keys(dados.contasPessoais || {}).length)
+        : 0;
+
+    // Monta lista de jogadores com suas contas
+    const jogadores = Object.entries(dados.contasPessoais || {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([nome, conta]) => {
+            const souEu = nome === usernameAtual;
+            const eliminado = (dados.jogadoresEliminados || []).includes(nome);
+            return `
+                <div style="display:flex; justify-content:space-between;
+                    align-items:center; padding:6px 12px;
+                    background:${souEu ? 'rgba(240,192,64,0.1)' : 'rgba(255,255,255,0.03)'};
+                    border-radius:6px; margin-bottom:4px;
+                    ${eliminado ? 'opacity:0.4;' : ''}">
+                    <span style="color:${souEu ? 'var(--destaque)' : 'var(--texto)'};">
+                        ${nome}${souEu ? ' (você)' : ''}${eliminado ? ' ☠️' : ''}
+                    </span>
+                    <span style="color:var(--destaque); font-weight:bold;">
+                        ${conta} 🪙
+                    </span>
+                </div>
+            `;
+        }).join('');
+
+    const popup = document.createElement('div');
+    popup.id = 'popup-revelacao';
+    popup.style.cssText = `
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.8);
+        display: flex; align-items: center;
+        justify-content: center; z-index: 250;
+        animation: surgir 0.3s ease;
+    `;
+    popup.innerHTML = `
+        <div style="background: var(--painel); border-radius: 20px;
+            padding: 32px; max-width: 500px; width: 90%;
+            border: 2px solid rgba(240,192,64,0.3);
+            box-shadow: 0 0 40px rgba(240,192,64,0.15);">
+
+            <h2 style="text-align:center; color:var(--destaque);
+                margin-bottom:20px; font-size:1.3rem;">
+                🏛️ Resultado da Rodada
+            </h2>
+
+            <!-- Linha 1: Total arrecadado -->
+            <div style="display:flex; justify-content:space-between;
+                background:rgba(255,255,255,0.05); border-radius:10px;
+                padding:12px 16px; margin-bottom:8px;">
+                <span style="color:var(--texto-fraco);">💰 Total nos Tributos</span>
+                <span style="color:var(--destaque); font-weight:bold;
+                    font-size:1.1rem;">${tributos} 🪙</span>
+            </div>
+
+            <!-- Linha 2: Recebido por jogador -->
+            <div style="display:flex; justify-content:space-between;
+                background:rgba(46,204,113,0.08); border-radius:10px;
+                padding:12px 16px; margin-bottom:8px;
+                border:1px solid rgba(46,204,113,0.2);">
+                <span style="color:var(--texto-fraco);">
+                    📤 Cada jogador recebeu
+                </span>
+                <span style="color:var(--sucesso); font-weight:bold;
+                    font-size:1.1rem;">+${porJogador} 🪙</span>
+            </div>
+
+            <!-- Linha 3: Descartado -->
+            <div style="display:flex; justify-content:space-between;
+                background:rgba(231,76,60,0.05); border-radius:10px;
+                padding:12px 16px; margin-bottom:20px;
+                border:1px solid rgba(231,76,60,0.15);">
+                <span style="color:var(--texto-fraco);">🗑️ Moedas descartadas</span>
+                <span style="color:var(--perigo); font-weight:bold;">
+                    ${descartado} 🪙
+                </span>
+            </div>
+
+            <!-- Placar atual -->
+            <h3 style="color:var(--texto-fraco); font-size:0.85rem;
+                margin-bottom:10px; text-transform:uppercase;
+                letter-spacing:1px;">📊 Placar Atual</h3>
+            <div>${jogadores}</div>
+
+            <!-- Barra de progresso do tempo -->
+            <div style="margin-top:20px;">
+                <div style="background:rgba(255,255,255,0.1);
+                    border-radius:4px; height:4px; overflow:hidden;">
+                    <div id="barra-revelacao" style="height:100%;
+                        background:var(--destaque); width:100%;
+                        transition:width 0.1s linear;"></div>
+                </div>
+                <p style="text-align:center; color:var(--texto-fraco);
+                    font-size:0.75rem; margin-top:6px;">
+                    Fechando em <span id="countdown-revelacao">8</span>s
+                </p>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(popup);
+
+    // Contagem regressiva de 8 segundos
+    let segundos = 8;
+    const barra = document.getElementById('barra-revelacao');
+    const countdown = document.getElementById('countdown-revelacao');
+
+    const timer = setInterval(() => {
+        segundos -= 0.1;
+        const porcentagem = (segundos / 8) * 100;
+        if (barra) barra.style.width = porcentagem + '%';
+        if (countdown) countdown.textContent = Math.ceil(segundos);
+
+        if (segundos <= 0) {
+            clearInterval(timer);
+            popup.style.opacity = '0';
+            popup.style.transition = 'opacity 0.3s';
+            setTimeout(() => popup.remove(), 300);
+        }
+    }, 100);
 }
 
 // =============================================
@@ -770,41 +1036,80 @@ let eventoPendente = false;
 let resolverEventoPendente = null;
 
 function sinalizarEventoConcluido() {
+    if (intervaloEventoAntes) {
+        clearInterval(intervaloEventoAntes);
+        intervaloEventoAntes = null;
+    }
+    esconderCronometro();
+    window._alvoEventoSelecionado = null;
     eventoPendente = false;
+
+    // Remove painel do evento
+    setTimeout(() => {
+        const p = document.getElementById('painel-evento-antes');
+        if (p) p.remove();
+    }, 800);
+
+    // Mostra decisão das moedas após pequena pausa
+    setTimeout(() => {
+        if (estadoAtual && !jaConfirmouDecisao) {
+            estadoAtual.fase = 'DECISAO';
+            mostrarFaseDecisao(estadoAtual);
+        }
+    }, 1000);
+
     if (resolverEventoPendente) {
         resolverEventoPendente();
         resolverEventoPendente = null;
     }
 }
 
+
+function obterPainelEvento() {
+    return document.getElementById('conteudo-evento-antes') ||
+           document.getElementById('painel-evento-extra');
+}
+
 function mostrarEvento(evento) {
     if (!evento) return;
 
     const emojis = {
-        ROUBO: '💰', VENENO: '🧪', PARCEIROS: '🤝', ROLETA: '🎰',
-        DUPLICATA: '✌️', EXPOSICAO: '🔍', LIDERANCA: '👑', OSMOSE: '🧂',
-        TRAICAO: '🔪', COPIA: '📄', BOLHA: '🫧', BOMBA_RELOGIO: '💣',
-        IGUALDADE: '🟰', FOGUEIRA: '🔥'
+        ROUBO:'💰',VENENO:'🧪',PARCEIROS:'🤝',ROLETA:'🎰',
+        DUPLICATA:'✌️',EXPOSICAO:'🔍',LIDERANCA:'👑',OSMOSE:'🧂',
+        TRAICAO:'🔪',COPIA:'📄',BOLHA:'🫧',BOMBA_RELOGIO:'💣',
+        IGUALDADE:'🟰',FOGUEIRA:'🔥'
     };
-
     const nomes = {
-        ROUBO: 'Roubo', VENENO: 'Veneno', PARCEIROS: 'Parceiros',
-        ROLETA: 'Roleta', DUPLICATA: 'Duplicata', EXPOSICAO: 'Exposição',
-        LIDERANCA: 'Liderança', OSMOSE: 'Osmose', TRAICAO: 'Traição',
-        COPIA: 'Cópia', BOLHA: 'Bolha', BOMBA_RELOGIO: 'Bomba-Relógio',
-        IGUALDADE: 'Igualdade', FOGUEIRA: 'Fogueira'
+        ROUBO:'Roubo',VENENO:'Veneno',PARCEIROS:'Parceiros',
+        ROLETA:'Roleta',DUPLICATA:'Duplicata',EXPOSICAO:'Exposição',
+        LIDERANCA:'Liderança',OSMOSE:'Osmose',TRAICAO:'Traição',
+        COPIA:'Cópia',BOLHA:'Bolha',BOMBA_RELOGIO:'Bomba-Relógio',
+        IGUALDADE:'Igualdade',FOGUEIRA:'Fogueira'
     };
 
-    document.getElementById('evento-emoji').textContent = emojis[evento.tipo] || '⚡';
-    document.getElementById('evento-titulo').textContent = nomes[evento.tipo] || evento.tipo;
-    document.getElementById('evento-descricao').textContent = evento.descricao || '';
+    document.getElementById('evento-emoji').textContent = emojis[evento.tipo]||'⚡';
+    document.getElementById('evento-titulo').textContent = nomes[evento.tipo]||evento.tipo;
+    document.getElementById('evento-descricao').textContent = evento.descricao||'';
 
     dispararAnimacaoEvento(evento.tipo);
     document.getElementById('overlay-evento').classList.remove('escondido');
 
+    // Barra de progresso
+    const barra = document.getElementById('barra-evento');
+    let progresso = 100;
+    const timerBarra = setInterval(() => {
+        progresso -= (100/80); // 8 segundos = 80 intervalos de 100ms
+        if (barra) barra.style.width = Math.max(0, progresso) + '%';
+        if (progresso <= 0) clearInterval(timerBarra);
+    }, 100);
+
+    // Fecha após 8 segundos automaticamente
     setTimeout(() => {
-        fecharEvento();
+        clearInterval(timerBarra);
+        document.getElementById('overlay-evento').classList.add('escondido');
+        document.getElementById('evento-animacao').innerHTML = '';
         eventoAtual = evento;
+        // Mostra interface se necessário
         if (evento.requerDecisao) mostrarInterfaceEvento(evento);
     }, 8000);
 }
@@ -915,10 +1220,29 @@ function animacaoZoom(c) {
     c.appendChild(el);
 }
 function animacaoCoroacao(c) {
+    // Coroa no canto superior direito
     const el = document.createElement('div');
-    el.className = 'anim-coroa';
+    el.style.cssText = `
+        position: absolute;
+        top: 8px;
+        right: 12px;
+        font-size: 2.5rem;
+        animation: coroaEntrada 0.6s ease forwards;
+    `;
     el.textContent = '👑';
     c.appendChild(el);
+
+    // Brilho sutil ao redor
+    const brilho = document.createElement('div');
+    brilho.style.cssText = `
+        position: absolute;
+        top: 0; right: 0;
+        width: 80px; height: 80px;
+        background: radial-gradient(circle,
+            rgba(240,192,64,0.3) 0%, transparent 70%);
+        animation: brilhar 1.5s ease-out forwards;
+    `;
+    c.appendChild(brilho);
 }
 function animacaoEspadasX(c) {
     const el = document.createElement('div');
@@ -1004,9 +1328,18 @@ function mostrarInterfaceEvento(evento, containerOverride) {
     }
 }
 
+let intervaloEventoAntes = null;
+
 function mostrarInterfaceEventoAntes(evento) {
     const painelExistente = document.getElementById('painel-evento-antes');
     if (painelExistente) painelExistente.remove();
+
+    if (intervaloEventoAntes) {
+        clearInterval(intervaloEventoAntes);
+        intervaloEventoAntes = null;
+    }
+
+    window._alvoEventoSelecionado = null;
 
     const painel = document.createElement('div');
     painel.id = 'painel-evento-antes';
@@ -1021,18 +1354,105 @@ function mostrarInterfaceEventoAntes(evento) {
 
     const conteudo = document.getElementById('conteudo-evento-antes');
     mostrarInterfaceEvento(evento, conteudo);
+
+    // Mostra cronômetro
+    mostrarCronometro(45);
+    let segundos = 45;
+
+    intervaloEventoAntes = setInterval(() => {
+    segundos--;
+    const val = document.getElementById('cronometro-valor');
+    if (val) {
+        val.textContent = segundos;
+        // Sempre preto, só muda o fundo do container
+        val.style.color = '#0f1923';
+        const container = document.getElementById('cronometro-evento-fixo');
+        if (container) {
+            if (segundos <= 10) container.style.background = 'var(--perigo)';
+            else if (segundos <= 20) container.style.background = 'var(--destaque)';
+        }
+    }
+    if (segundos <= 0) {
+        clearInterval(intervaloEventoAntes);
+        intervaloEventoAntes = null;
+        esconderCronometro();
+        executarAcaoPadrao(evento);
+    }
+}, 1000);
+}
+
+async function executarAcaoPadrao(evento) {
+    // Ação padrão quando o tempo esgota
+    const mensagens = {
+        ROUBO: '💰 O ladrão não escolheu ninguém.',
+        VENENO: '🧪 O Feiticeiro não escolheu nenhuma vítima.',
+        PARCEIROS: '🤝 Tempo esgotado! Nenhuma ação dos parceiros.',
+        ROLETA: '🎰 Tempo esgotado! Sem giros.',
+        EXPOSICAO: '🔍 O Expositor não espiou ninguém.',
+        OSMOSE: '🧂 Nenhum duelo foi iniciado.',
+        TRAICAO: '🔪 O Traidor não escolheu ninguém.',
+        BOMBA_RELOGIO: '💣 A bomba explodiu!',
+        IGUALDADE: '🟰 Votação encerrada por tempo.',
+        DUPLICATA: '✌️ Tempo esgotado! Nenhuma duplicata.'
+    };
+
+    const msg = mensagens[evento.tipo] || 'Tempo esgotado!';
+
+    // Envia ação de recusar/pular para o servidor
+    const acoesRecusar = {
+        ROUBO: 'RECUSAR', VENENO: 'PULAR', PARCEIROS: 'PULAR',
+        ROLETA: 'PARAR', EXPOSICAO: 'RECUSAR', OSMOSE: 'RECUSAR',
+        TRAICAO: 'PULAR', BOMBA_RELOGIO: 'PULAR',
+        IGUALDADE: 'NAO', DUPLICATA: 'NENHUM'
+    };
+
+    const acao = acoesRecusar[evento.tipo];
+    if (acao) {
+        await enviarAcaoEvento({ tipo: evento.tipo, acao });
+    }
+
+    // Atualiza o painel
+    const conteudo = document.getElementById('conteudo-evento-antes');
+    if (conteudo) {
+        conteudo.innerHTML = `
+            <div style="text-align:center; padding:16px;">
+                <div style="font-size:2rem; margin-bottom:8px;">⏰</div>
+                <p style="color:var(--texto-fraco);">${msg}</p>
+            </div>
+        `;
+    }
+
+    mostrarMensagemFlutuante('⏰ ' + msg);
+    sinalizarEventoConcluido();
 }
 
 function seletorJogadores(excluirEuMesmo = true) {
-    const jogadores = Object.keys(estadoAtual.contasPessoais || {});
+    const jogadores = Object.keys(estadoAtual.contasPessoais || {})
+        .filter(n => !(estadoAtual.jogadoresEliminados || []).includes(n))
+        .filter(n => excluirEuMesmo ? n !== usernameAtual : true);
+
     const opcoes = jogadores
-        .filter(n => excluirEuMesmo ? n !== usernameAtual : true)
         .map(n => `<option value="${n}">${n}</option>`)
         .join('');
-    return `<select class="select-evento" id="select-alvo-evento">
-        <option value="">Escolha um jogador...</option>
+
+    // Pré-seleciona o primeiro se só houver um
+    if (jogadores.length === 1) {
+        window._alvoEventoSelecionado = jogadores[0];
+    }
+
+    return `<select class="select-evento" id="select-alvo-evento"
+        style="color:black; background:white;"
+        onchange="window._alvoEventoSelecionado = this.value">
+        <option value="" style="color:black">Escolha um jogador...</option>
         ${opcoes}
     </select>`;
+}
+
+function obterAlvoSelecionado() {
+    if (window._alvoEventoSelecionado) return window._alvoEventoSelecionado;
+    const el = document.getElementById('select-alvo-evento') ||
+               document.querySelector('.select-evento');
+    return el ? el.value : null;
 }
 
 function mostrarInterfaceRoubo(evento, painel) {
@@ -1053,21 +1473,20 @@ function mostrarInterfaceRoubo(evento, painel) {
 }
 
 async function confirmarRoubo() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     await enviarAcaoEvento({ tipo: 'ROUBO', acao: 'ROUBAR', alvo });
-    document.getElementById('painel-evento-extra').innerHTML =
-        '<p class="evento-info-neutro">✅ Ação registrada!</p>';
-        const painel = document.getElementById('painel-evento-antes');
-    if (painel) painel.innerHTML =
-        '<div class="decisao-card"><p class="evento-info-neutro">💰 Roubo Pronto!</p></div>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = '<p class="evento-info-neutro">✅ Ação registrada!</p>';
     sinalizarEventoConcluido();
 }
 
 async function recusarRoubo() {
     await enviarAcaoEvento({ tipo: 'ROUBO', acao: 'RECUSAR' });
-    document.getElementById('painel-evento-extra').innerHTML =
-        '<p class="evento-info-neutro">✅ Você optou por não roubar.</p>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = '<p class="evento-info-neutro">✅ Você optou por não roubar.</p>';
+    sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceVeneno(evento, painel) {
@@ -1086,12 +1505,12 @@ function mostrarInterfaceVeneno(evento, painel) {
 }
 
 async function confirmarVeneno() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     await enviarAcaoEvento({ tipo: 'VENENO', acao: 'ENVENENAR', alvo });
-    const painel = document.getElementById('painel-evento-antes');
-    if (painel) painel.innerHTML =
-        '<div class="decisao-card"><p class="evento-info-neutro">🧪 Veneno preparado!</p></div>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = '<p class="evento-info-neutro">🧪 Veneno preparado!</p>';
     sinalizarEventoConcluido();
 }
 
@@ -1118,17 +1537,13 @@ function mostrarInterfaceParceiros(evento, painel) {
 
 async function escolherParceiro(acao) {
     await enviarAcaoEvento({ tipo: 'PARCEIROS', acao });
-    document.getElementById('painel-evento-extra').innerHTML =
-        `<p class="evento-info-neutro">✅ Você escolheu: ${acao}</p>`;
-        const painel = document.getElementById('painel-evento-antes');
-    if (painel) painel.innerHTML =
-        '<div class="decisao-card"><p class="evento-info-neutro">🤝 Escolha Feita!</p></div>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = `<p class="evento-info-neutro">✅ Você escolheu: ${acao}</p>`;
     sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceRoleta(evento, painel) {
     window.girosRoleta = 0;
-    window.saldoRoleta = 0;
     window.maxGiros = 3;
 
     painel.innerHTML = `
@@ -1138,10 +1553,8 @@ function mostrarInterfaceRoleta(evento, painel) {
                 Cair em 1 ou 8 → bem-pessoal ×1.5<br>
                 Qualquer outro → -5 moedas no bem-pessoal
             </p>
-            <div id="roleta-resultado" style="font-size:2rem;text-align:center;
-                margin:12px 0;min-height:40px;"></div>
-            <div id="roleta-saldo" style="text-align:center;color:var(--destaque);
-                margin-bottom:8px;"></div>
+            <div id="roleta-resultado" style="font-size:2.5rem;text-align:center;
+                margin:16px 0;min-height:50px;"></div>
             <div class="evento-botoes">
                 <button class="btn-evento-acao" id="btn-girar"
                     onclick="girarRoleta()">
@@ -1160,33 +1573,32 @@ async function girarRoleta() {
     if (window.girosRoleta >= window.maxGiros) return;
     window.girosRoleta++;
     const restantes = window.maxGiros - window.girosRoleta;
+
     const resultado = Math.floor(Math.random() * 8) + 1;
     const ganhou = resultado === 1 || resultado === 8;
 
+    // Mostra resultado visual
     document.getElementById('roleta-resultado').innerHTML =
         `<span style="color:${ganhou ? 'var(--sucesso)' : 'var(--perigo)'}">
-            ${resultado} ${ganhou ? '✅ ×1.5' : '❌ -5'}
+            ${resultado} ${ganhou ? '✅ ×1.5!' : '❌ -5'}
         </span>`;
 
+    // Envia para o backend aplicar o efeito
     await enviarAcaoEvento({ tipo: 'ROLETA', acao: 'GIRAR', resultado });
 
     const btn = document.getElementById('btn-girar');
     if (btn) btn.textContent = `🎰 Girar (${restantes} restantes)`;
 
-    // Quando acabar os giros, fecha automaticamente
     if (restantes === 0) {
         if (btn) btn.disabled = true;
         const btnParar = document.getElementById('btn-parar-roleta');
         if (btnParar) btnParar.disabled = true;
+
+        // Fecha automaticamente após 1.5s
         setTimeout(() => {
-            const painel = document.getElementById('painel-evento-antes');
-            if (painel) {
-                painel.innerHTML = `
-                    <div class="decisao-card">
-                        <p class="evento-info-neutro">🎰 Roleta encerrada!</p>
-                    </div>
-                `;
-            }
+            const painel = obterPainelEvento();
+            if (painel) painel.innerHTML =
+                '<p class="evento-info-neutro">🎰 Roleta encerrada!</p>';
             sinalizarEventoConcluido();
         }, 1500);
     }
@@ -1194,21 +1606,10 @@ async function girarRoleta() {
 
 async function pararRoleta() {
     await enviarAcaoEvento({ tipo: 'ROLETA', acao: 'PARAR' });
-    const painel = document.getElementById('painel-evento-antes');
-    if (painel) {
-        painel.innerHTML = `
-            <div class="decisao-card">
-                <p class="evento-info-neutro">🎰 Roleta encerrada!</p>
-            </div>
-        `;
-    }
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML =
+        '<p class="evento-info-neutro">🎰 Roleta encerrada!</p>';
     sinalizarEventoConcluido();
-}
-
-async function pararRoleta() {
-    await enviarAcaoEvento({ tipo: 'ROLETA', acao: 'PARAR' });
-    document.getElementById('painel-evento-extra').innerHTML =
-        `<p class="evento-info-neutro">✅ Roleta encerrada! Saldo: ${window.saldoRoleta > 0 ? '+' : ''}${window.saldoRoleta} 🪙</p>`;
 }
 
 function mostrarInterfaceDuplicata(evento, painel) {
@@ -1269,21 +1670,26 @@ function mostrarInterfaceExposicao(evento, painel) {
 }
 
 async function confirmarExposicao() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     const resp = await enviarAcaoEvento({ tipo: 'EXPOSICAO', acao: 'ESPIAR', alvo });
-    if (resp && resp.bemPessoal !== undefined) {
-        document.getElementById('resultado-exposicao').innerHTML =
-            `<p style="color:var(--destaque)">💼 ${alvo} tem <strong>${resp.bemPessoal} moedas</strong> no bem-pessoal!</p>`;
+    const painel = obterPainelEvento();
+    if (painel && resp?.bemPessoal !== undefined) {
+        painel.innerHTML = `
+            <p style="color:var(--destaque); text-align:center;">
+                💼 ${alvo} tem <strong>${resp.bemPessoal} moedas</strong> no bem-pessoal!
+            </p>`;
     }
+    sinalizarEventoConcluido();
 }
 
 async function recusarExposicao() {
     await enviarAcaoEvento({ tipo: 'EXPOSICAO', acao: 'RECUSAR' });
-    document.getElementById('painel-evento-extra').innerHTML =
-        '<p class="evento-info-neutro">✅ Você optou por não espiar.</p>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = '<p class="evento-info-neutro">✅ Você optou por não espiar.</p>';
+    sinalizarEventoConcluido();
 }
-
 function mostrarInterfaceLideranca(evento, painel) {
     if (!evento.souExecutor) {
         painel.innerHTML = `<p class="evento-info-neutro">
@@ -1324,7 +1730,8 @@ function atualizarPlacarLideranca(votos) {
 }
 
 async function votarLider() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     await enviarAcaoEvento({ tipo: 'LIDERANCA', acao: 'VOTAR', alvo });
     document.getElementById('painel-evento-extra').innerHTML =
@@ -1346,28 +1753,23 @@ function mostrarInterfaceOsmose(evento, painel) {
 }
 
 async function confirmarOsmose() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     const resp = await enviarAcaoEvento({ tipo: 'OSMOSE', acao: 'DESAFIAR', alvo });
     let msg = '⚔️ Duelo realizado!';
     if (resp?.resultado === 1) msg = '⚔️ Você venceu! +3 moedas!';
     else if (resp?.resultado === -1) msg = '⚔️ Você perdeu! -3 moedas.';
     else if (resp?.resultado === 0) msg = '⚔️ Empate!';
-    document.getElementById('painel-evento-extra').innerHTML =
-        `<p class="evento-info-neutro">${msg}</p>`;
-        const painel = document.getElementById('painel-evento-antes');
-    if (painel) painel.innerHTML =
-        '<div class="decisao-card"><p class="evento-info-neutro">⚔️ Desafio Feito!</p></div>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = `<p class="evento-info-neutro">${msg}</p>`;
     sinalizarEventoConcluido();
 }
 
 async function recusarOsmose() {
     await enviarAcaoEvento({ tipo: 'OSMOSE', acao: 'RECUSAR' });
-    document.getElementById('painel-evento-extra').innerHTML =
-        '<p class="evento-info-neutro">✅ Você optou por não desafiar.</p>';
-        const painel = document.getElementById('painel-evento-antes');
-    if (painel) painel.innerHTML =
-        '<div class="decisao-card"><p class="evento-info-neutro">⚔️ Desafio Recusado!</p></div>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = '<p class="evento-info-neutro">✅ Você optou por não desafiar.</p>';
     sinalizarEventoConcluido();
 }
 
@@ -1394,26 +1796,26 @@ function mostrarInterfaceTraicao(evento, painel) {
 }
 
 async function confirmarTraicao() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     await enviarAcaoEvento({ tipo: 'TRAICAO', acao: 'TRAIR', alvo });
-    document.getElementById('painel-evento-extra').innerHTML =
-        '<p class="evento-info-neutro">🔪 Traição registrada!</p>';
-        const painel = document.getElementById('painel-evento-antes');
-    if (painel) painel.innerHTML =
-        '<div class="decisao-card"><p class="evento-info-neutro">🔪 Alvo na Mira!</p></div>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = '<p class="evento-info-neutro">🔪 Traição registrada!</p>';
     sinalizarEventoConcluido();
 }
 
 async function adivinharTraidor() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     const resp = await enviarAcaoEvento({ tipo: 'TRAICAO', acao: 'ADIVINHAR', alvo });
     const msg = resp?.acertou
         ? '🎯 Você acertou! O traidor perdeu 3 moedas!'
         : '❌ Você errou! Perdeu 3 moedas.';
-    document.getElementById('painel-evento-extra').innerHTML =
-        `<p class="evento-info-neutro">${msg}</p>`;
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = `<p class="evento-info-neutro">${msg}</p>`;
+    sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceCopia(evento, painel) {
@@ -1430,17 +1832,27 @@ function mostrarInterfaceCopia(evento, painel) {
 }
 
 async function confirmarCopia() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     await enviarAcaoEvento({ tipo: 'COPIA', acao: 'COPIAR', alvo });
-    document.getElementById('painel-evento-extra').innerHTML =
-        `<p class="evento-info-neutro">📄 Bem-pessoal de ${alvo} copiado!</p>`;
+
+    const painelExtra = document.getElementById('painel-evento-extra');
+    const painelAntes = document.getElementById('conteudo-evento-antes');
+    const msg = `<p class="evento-info-neutro">📄 Bem-pessoal de ${alvo} copiado!</p>`;
+    if (painelAntes) painelAntes.innerHTML = msg;
+    if (painelExtra) painelExtra.innerHTML = msg;
+    sinalizarEventoConcluido();
 }
 
 async function recusarCopia() {
     await enviarAcaoEvento({ tipo: 'COPIA', acao: 'RECUSAR' });
-    document.getElementById('painel-evento-extra').innerHTML =
-        '<p class="evento-info-neutro">✅ Você optou por não copiar.</p>';
+    const painelExtra = document.getElementById('painel-evento-extra');
+    const painelAntes = document.getElementById('conteudo-evento-antes');
+    const msg = '<p class="evento-info-neutro">✅ Você optou por não copiar.</p>';
+    if (painelAntes) painelAntes.innerHTML = msg;
+    if (painelExtra) painelExtra.innerHTML = msg;
+    sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceIgualdade(evento, painel) {
@@ -1457,11 +1869,8 @@ function mostrarInterfaceIgualdade(evento, painel) {
 
 async function votarIgualdade(sim) {
     await enviarAcaoEvento({ tipo: 'IGUALDADE', acao: sim ? 'SIM' : 'NAO' });
-    document.getElementById('painel-evento-extra').innerHTML =
-        `<p class="evento-info-neutro">✅ Voto registrado!</p>`;
-        const painel = document.getElementById('painel-evento-antes');
-    if (painel) painel.innerHTML =
-        '<div class="decisao-card"><p class="evento-info-neutro">✅ Decisão Feita!</p></div>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = '<p class="evento-info-neutro">✅ Voto registrado!</p>';
     sinalizarEventoConcluido();
 }
 
@@ -1480,16 +1889,14 @@ function mostrarInterfaceBomba(evento, painel) {
 }
 
 async function passarBomba() {
-    const alvo = document.getElementById('select-alvo-evento')?.value;
+    const alvo = obterAlvoSelecionado();
+    window._alvoEventoSelecionado = null; // limpa após usar
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
     const resp = await enviarAcaoEvento({ tipo: 'BOMBA_RELOGIO', acao: 'PASSAR', alvo });
-    document.getElementById('painel-evento-extra').innerHTML =
-        resp?.explodiu
-            ? '<p class="evento-info-neutro">💥 A bomba explodiu!</p>'
-            : `<p class="evento-info-neutro">💣 Bomba passada para ${alvo}!</p>`;
-            const painel = document.getElementById('painel-evento-antes');
-    if (painel) painel.innerHTML =
-        '<div class="decisao-card"><p class="evento-info-neutro">💣 Bomba Passada!</p></div>';
+    const painel = obterPainelEvento();
+    if (painel) painel.innerHTML = resp?.explodiu
+        ? '<p class="evento-info-neutro">💥 A bomba explodiu!</p>'
+        : `<p class="evento-info-neutro">💣 Bomba passada para ${alvo}!</p>`;
     sinalizarEventoConcluido();
 }
 

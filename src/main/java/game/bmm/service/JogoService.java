@@ -160,7 +160,6 @@ public class JogoService {
     // Monta o estado público da sala (enviado para todos)
     public EstadoSala montarEstadoSala(String codigoSala) {
         Sala sala = buscarSala(codigoSala);
-        List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
 
         EstadoSala estado = new EstadoSala();
         estado.setCodigoSala(codigoSala);
@@ -168,21 +167,39 @@ public class JogoService {
         estado.setTotalRodadas(sala.getTotalRodadas());
         estado.setMeta(sala.getMeta());
 
-        // Define fase baseado no status da sala
         String fase = sala.getStatus().equals("EM_JOGO") ? "DECISAO" : sala.getStatus();
         estado.setFase(fase);
 
         boolean podeVotar = sala.getRodadaAtual() > sala.getTotalRodadas() / 2;
         estado.setPodeVotar(podeVotar);
 
+        // Todos os jogadores (incluindo eliminados) para exibir na mesa
+        List<Jogador> todos = jogadorRepository.findBySala(sala);
+        List<Jogador> ativos = jogadorRepository.findBySalaAndAtivoTrue(sala);
+
+        List<String> eliminados = todos.stream()
+                .filter(Jogador::isEliminado)
+                .map(j -> j.getUsuario().getUsername())
+                .toList();
+        estado.setJogadoresEliminados(eliminados);
+
         Map<String, Integer> contas = new LinkedHashMap<>();
-        for (Jogador j : ativos) {
+        for (Jogador j : todos) {
             contas.put(j.getUsuario().getUsername(), j.getContaPessoal());
         }
         estado.setContasPessoais(contas);
 
+        // Busca rodada ativa ou concluída mais recente
+        Rodada rodada = null;
         try {
-            Rodada rodada = buscarRodadaAtiva(sala);
+            rodada = buscarRodadaAtiva(sala);
+        } catch (RuntimeException e) {
+            List<Rodada> concluidas = rodadaRepository
+                    .findBySalaAndStatusOrderByNumeroDesc(sala, "CONCLUIDA");
+            if (!concluidas.isEmpty()) rodada = concluidas.get(0);
+        }
+
+        if (rodada != null) {
             List<Decisao> decisoes = decisaoRepository.findByRodada(rodada);
             List<String> jaDecidiram = decisoes.stream()
                     .map(d -> d.getJogador().getUsuario().getUsername())
@@ -190,13 +207,9 @@ public class JogoService {
             estado.setJaDecidiram(jaDecidiram);
             estado.setTotalTributosRodada(rodada.getTotalTributos());
             estado.setValorDistribuido(rodada.getValorDistribuido());
-        } catch (Exception e) {
-            estado.setJaDecidiram(new ArrayList<>());
-        }
+            estado.setMoedasDescartadas(rodada.getMoedasDescartadas());
 
-        // Inclui info do evento atual se houver
-        try {
-            Rodada rodada = buscarRodadaAtiva(sala);
+            // Evento da rodada
             if (rodada.getEvento() != null) {
                 Evento ev = rodada.getEvento();
                 EstadoSala.EventoInfo info = new EstadoSala.EventoInfo();
@@ -204,26 +217,11 @@ public class JogoService {
                 info.descricao = ev.getDescricao();
                 info.requerDecisao = ev.isRequerDecisao();
                 info.jogadorAlvoId = ev.getJogadorAlvoId();
-
-                // Define papéis para cada jogador baseado no evento
-                // (preenchido individualmente no montarEstadoJogador)
                 estado.setEventoAtualInfo(info);
             }
-        } catch (Exception ignored) {}
-
-        // Lista todos os jogadores incluindo eliminados para manter na mesa
-        List<Jogador> todos = jogadorRepository.findBySala(sala);
-        List<String> eliminados = todos.stream()
-                .filter(j -> j.isEliminado())
-                .map(j -> j.getUsuario().getUsername())
-                .toList();
-        estado.setJogadoresEliminados(eliminados);
-
-        // Contas pessoais de TODOS (incluindo eliminados para exibir na mesa)
-        for (Jogador j : todos) {
-            contas.put(j.getUsuario().getUsername(), j.getContaPessoal());
+        } else {
+            estado.setJaDecidiram(new ArrayList<>());
         }
-        estado.setContasPessoais(contas);
 
         return estado;
     }
@@ -347,9 +345,14 @@ public class JogoService {
             }
             case "VENENO" -> {
                 if ("ENVENENAR".equals(acao) && alvo != null) {
-                    // Armazena alvo do veneno para verificar após decisão
                     resultado.put("alvoVeneno", alvo.getId());
                     resultado.put("mensagem", "Veneno preparado!");
+                    resultado.put("notificarSala", true);
+                    resultado.put("mensagemSala", "🧪 O Feiticeiro escolheu sua vítima!");
+                } else if ("PULAR".equals(acao)) {
+                    resultado.put("mensagem", "Sem vítima escolhida.");
+                    resultado.put("notificarSala", true);
+                    resultado.put("mensagemSala", "🧪 O Feiticeiro não escolheu ninguém.");
                 }
             }
             case "PARCEIROS" -> {
@@ -546,14 +549,14 @@ public class JogoService {
     public boolean eventoDecideAntesDasMoedas(String tipo) {
         return switch (tipo) {
             case "VENENO", "LIDERANCA", "IGUALDADE",
-                 "BOMBA_RELOGIO", "PARCEIROS", "ROUBO", "OSMOSE", "COPIA"-> true;
+                 "BOMBA_RELOGIO", "PARCEIROS", "ROUBO", "OSMOSE", "COPIA", "TRAICAO"-> true;
             default -> false;
         };
     }
 
     public boolean eventoDecideDepoisDasMoedas(String tipo) {
         return switch (tipo) {
-            case  "ROLETA", "DUPLICATA", "EXPOSICAO", "TRAICAO" -> false;
+            case  "ROLETA", "DUPLICATA", "EXPOSICAO" -> false;
             default -> false;
         };
     }

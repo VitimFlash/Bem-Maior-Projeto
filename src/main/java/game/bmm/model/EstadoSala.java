@@ -47,7 +47,10 @@ public class EstadoSala {
     // Revelado apenas no FIM:
     private Map<String, Integer> bensPessoais;   // nome → bem-pessoal (oculto durante jogo)
     private Map<String, Integer> totaisFinais;   // nome → conta + bem-pessoal
+    private int moedasDescartadas;
 
+    public int getMoedasDescartadas() { return moedasDescartadas; }
+    public void setMoedasDescartadas(int m) { this.moedasDescartadas = m; }
 
     public boolean isDecisaoEventoAntes() { return decisaoEventoAntes; }
     public void setDecisaoEventoAntes(boolean d) { this.decisaoEventoAntes = d; }

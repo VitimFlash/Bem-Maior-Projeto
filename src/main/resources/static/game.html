@@ -21,7 +21,6 @@
         <span id="nome-usuario"></span>
     </div>
 </header>
-
 <!-- OVERLAY DE EVENTO -->
 <div id="overlay-evento" class="overlay-evento escondido">
     <div class="evento-card">
@@ -29,7 +28,13 @@
         <h2 id="evento-titulo"></h2>
         <p id="evento-descricao"></p>
         <div id="evento-animacao" class="evento-animacao"></div>
-        <button class="btn-principal" onclick="fecharEvento()">Entendido!</button>
+        <!-- Barra de progresso -->
+        <div style="margin-top:16px; background:rgba(255,255,255,0.1);
+            border-radius:4px; height:4px; overflow:hidden;">
+            <div id="barra-evento" style="height:100%;
+                background:var(--destaque); width:100%;
+                transition:width 0.1s linear;"></div>
+        </div>
     </div>
 </div>
 
@@ -142,5 +147,11 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
 <script src="game.js"></script>
+
+<div id="cronometro-evento-fixo" class="cronometro-fixo escondido">
+    <div id="cronometro-label">⏱️ Tempo restante</div>
+    <div id="cronometro-valor">45</div>
+</div>
+
 </body>
 </html>
