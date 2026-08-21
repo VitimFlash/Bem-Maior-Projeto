@@ -13,6 +13,7 @@ let jaConfirmouDecisao = false;
 let jaMostrouDecisaoEvento = false;
 let eventoAtual = null;
 let intervaloDiscussao = null;
+let eventoAntesConcluido = false;
 
 // =============================================
 // INICIALIZAÇÃO
@@ -54,21 +55,29 @@ function conectarWebSocket() {
                 }
 
                 if (dados.fase === 'DECISAO_EVENTO_ANTES' && dados.eventoAtualInfo) {
-                    document.getElementById('painel-decisao').classList.add('escondido');
-                    eventoAtual = dados.eventoAtualInfo;
+                    eventoAntesConcluido = false;
                     eventoPendente = true;
 
-                    // Guarda o estado da sala para usar após o evento
                     if (dados.contasPessoais) {
-                        estadoAtual = dados;
-                        estadoAtual.fase = 'DECISAO'; // marca para mostrar decisão depois
+                        estadoAtual = { ...estadoAtual, ...dados, fase: 'DECISAO' };
                     }
 
-                    mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
-                }
+                    const temCargo = dados.eventoAtualInfo.souExecutor ||
+                        dados.eventoAtualInfo.souFeiticeiro ||
+                        dados.eventoAtualInfo.souParceiro ||
+                        dados.eventoAtualInfo.souExpositor ||
+                        dados.eventoAtualInfo.souTraidor ||
+                        dados.eventoAtualInfo.souPortador;
 
-                if (dados.fase === 'LIDERANCA_DISTRIBUIR') {
-                    mostrarInterfaceDistribuicaoLider(dados);
+                    if (temCargo) {
+                        // Jogador com cargo — mostra interface de decisão com cronômetro
+                        document.getElementById('painel-decisao').classList.add('escondido');
+                        eventoAtual = dados.eventoAtualInfo;
+                        mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
+                    } else {
+                        // Jogador sem cargo — mostra aguardo sem cronômetro
+                        mostrarAguardoEvento(dados.eventoAtualInfo);
+                    }
                 }
             });
 
@@ -80,6 +89,24 @@ function conectarWebSocket() {
             setTimeout(conectarWebSocket, 3000);
         }
     );
+}
+
+function mostrarAguardoEvento(evento) {
+    const painelExistente = document.getElementById('painel-evento-antes');
+    if (painelExistente) painelExistente.remove();
+
+    const painel = document.createElement('div');
+    painel.id = 'painel-evento-antes';
+    painel.className = 'painel-decisao';
+    painel.innerHTML = `
+        <div class="decisao-card" style="text-align:center;">
+            <div style="font-size:2rem; margin-bottom:12px;">⏳</div>
+            <h3 style="color:var(--texto-fraco); font-size:1rem;">
+                ${obterMensagemAguardo(evento.tipo)}
+            </h3>
+        </div>
+    `;
+    document.body.appendChild(painel);
 }
 
 async function buscarEstadoAtual() {
@@ -226,6 +253,7 @@ function tratarMensagemSala(dados) {
              mostrarResultadoEvento(dados);
             break;
         case 'REVELACAO':
+            eventoAntesConcluido = false; 
             jaConfirmouDecisao = false;
             jaMostrouDecisaoEvento = false;
             eventoAtual = null;
@@ -398,11 +426,9 @@ function atualizarPlacar(estado) {
 // FASE DE DECISÃO
 // =============================================
 function mostrarFaseDecisao(dados) {
-    // Se há evento pendente, não mostra decisão ainda
-    if (eventoPendente) {
-        console.log('Evento pendente — aguardando conclusão antes da decisão');
-        return;
-    }
+    // Não mostra decisão se evento ainda está pendente
+    if (eventoPendente && !eventoAntesConcluido) return;
+
     const eliminados = dados.jogadoresEliminados || [];
     if (eliminados.includes(usernameAtual)) {
         document.getElementById('painel-decisao').classList.add('escondido');
@@ -707,11 +733,17 @@ function mostrarResultadoEvento(dados) {
     const overlayAnterior = document.getElementById('overlay-resultado-evento');
     if (overlayAnterior) overlayAnterior.remove();
 
-    const isBolha = dados.nomeEvento === 'BOLHA';
-    const corFundo = isBolha
-        ? 'rgba(46,204,113,0.15)'
-        : 'rgba(231,76,60,0.15)';
-    const corBorda = isBolha ? 'var(--sucesso)' : 'var(--perigo)';
+    const isPositivo = dados.nomeEvento === 'BOLHA' ||
+        (dados.nomeEvento === 'VENENO' && dados.mensagem.includes('não foi'));
+    const isNegativo = dados.nomeEvento === 'FOGUEIRA' ||
+        (dados.nomeEvento === 'VENENO' && dados.mensagem.includes('foi ativado'));
+
+    const corBorda = isPositivo
+        ? '#1a7a4a'  // verde escuro
+        : isNegativo ? 'var(--perigo)' : 'var(--destaque)';
+    const corFundo = isPositivo
+        ? 'rgba(26,122,74,0.15)'
+        : isNegativo ? 'rgba(231,76,60,0.15)' : 'rgba(240,192,64,0.1)';
 
     const overlay = document.createElement('div');
     overlay.id = 'overlay-resultado-evento';
@@ -726,39 +758,37 @@ function mostrarResultadoEvento(dados) {
         <div style="background: ${corFundo}; border-radius: 20px;
             padding: 48px; max-width: 500px; width: 90%;
             text-align: center; border: 2px solid ${corBorda};
-            box-shadow: 0 0 40px ${corBorda};">
-            <div style="font-size: 5rem; margin-bottom: 16px;
-                animation: surgir 0.5s ease;">
+            box-shadow: 0 0 40px ${corBorda}40;">
+            <div style="font-size: 5rem; margin-bottom: 16px;">
                 ${dados.emoji || '⚡'}
             </div>
             <h2 style="color: ${corBorda}; margin-bottom: 16px; font-size: 1.5rem;">
-                ${isBolha ? '🫧 A Bolha Estourou!' : '🔥 A Fogueira Apagou!'}
+                Resultado do Evento
             </h2>
-            <div style="background: rgba(255,255,255,0.05); border-radius: 12px;
-                padding: 20px; margin: 16px 0;">
-                <p style="font-size: 1.1rem; color: var(--texto); line-height: 1.8;">
-                    ${dados.mensagem}
-                </p>
-            </div>
-            <div style="margin-top: 16px; color: var(--texto-fraco);
-                font-size: 0.85rem;">
-                Fechando em <span id="countdown-evento">5</span> segundos...
+            <p style="font-size: 1.1rem; color: var(--texto); line-height: 1.6;
+                margin-bottom: 20px;">
+                ${dados.mensagem}
+            </p>
+            <div style="background:rgba(255,255,255,0.1);
+                border-radius:4px;height:4px;overflow:hidden;">
+                <div id="barra-resultado-evento" style="height:100%;
+                    background:${corBorda};width:100%;
+                    transition:width 0.1s linear;"></div>
             </div>
         </div>
     `;
     document.body.appendChild(overlay);
 
-    // Countdown
-    let countdown = 5;
+    let seg = 5;
+    const barra = document.getElementById('barra-resultado-evento');
     const timer = setInterval(() => {
-        countdown--;
-        const el = document.getElementById('countdown-evento');
-        if (el) el.textContent = countdown;
-        if (countdown <= 0) {
+        seg -= 0.1;
+        if (barra) barra.style.width = Math.max(0,(seg/5)*100) + '%';
+        if (seg <= 0) {
             clearInterval(timer);
             overlay.remove();
         }
-    }, 1000);
+    }, 100);
 }
 
 function mostrarCronometro(segundos) {
@@ -1036,6 +1066,8 @@ let eventoPendente = false;
 let resolverEventoPendente = null;
 
 function sinalizarEventoConcluido() {
+    eventoAntesConcluido = true;
+
     if (intervaloEventoAntes) {
         clearInterval(intervaloEventoAntes);
         intervaloEventoAntes = null;
@@ -1044,19 +1076,18 @@ function sinalizarEventoConcluido() {
     window._alvoEventoSelecionado = null;
     eventoPendente = false;
 
-    // Remove painel do evento
+    // Remove painel do evento após pequena pausa
     setTimeout(() => {
         const p = document.getElementById('painel-evento-antes');
         if (p) p.remove();
-    }, 800);
+    }, 500);
 
-    // Mostra decisão das moedas após pequena pausa
+    // Mostra decisão das moedas após pausa
     setTimeout(() => {
         if (estadoAtual && !jaConfirmouDecisao) {
-            estadoAtual.fase = 'DECISAO';
             mostrarFaseDecisao(estadoAtual);
         }
-    }, 1000);
+    }, 800);
 
     if (resolverEventoPendente) {
         resolverEventoPendente();
@@ -1312,6 +1343,23 @@ function mostrarInterfaceEvento(evento, containerOverride) {
     painel.innerHTML = '';
     if (!containerOverride) painel.classList.remove('escondido');
 
+    // Se o jogador não tem cargo no evento, mostra aguardando
+    const temCargo = evento.souExecutor || evento.souFeiticeiro ||
+        evento.souParceiro || evento.souExpositor || evento.souTraidor ||
+        evento.souPortador;
+
+    if (!temCargo && evento.requerDecisao) {
+        painel.innerHTML = `
+            <div style="text-align:center; padding:20px;">
+                <div style="font-size:2rem; margin-bottom:12px;">⏳</div>
+                <p style="color:var(--texto-fraco);">
+                    ${obterMensagemAguardo(evento.tipo)}
+                </p>
+            </div>
+        `;
+        return;
+    }
+
     switch(evento.tipo) {
         case 'ROUBO':         mostrarInterfaceRoubo(evento, painel); break;
         case 'VENENO':        mostrarInterfaceVeneno(evento, painel); break;
@@ -1326,6 +1374,23 @@ function mostrarInterfaceEvento(evento, containerOverride) {
         case 'IGUALDADE':     mostrarInterfaceIgualdade(evento, painel); break;
         case 'BOMBA_RELOGIO': mostrarInterfaceBomba(evento, painel); break;
     }
+}
+
+function obterMensagemAguardo(tipo) {
+    const msgs = {
+        ROUBO: '💰 O Ladrão está escolhendo sua vítima...',
+        VENENO: '🧪 O Feiticeiro está escolhendo quem envenenar...',
+        PARCEIROS: '🤝 Os Parceiros estão decidindo...',
+        ROLETA: '🎰 Os jogadores estão girando a roleta...',
+        DUPLICATA: '✌️ Os jogadores estão decidindo a duplicata...',
+        EXPOSICAO: '🔍 O Expositor está espiando alguém...',
+        OSMOSE: '🧂 Os jogadores estão decidindo os duelos...',
+        TRAICAO: '🔪 O Traidor está escolhendo sua vítima...',
+        COPIA: '📄 Os jogadores estão decidindo a cópia...',
+        IGUALDADE: '🟰 Os jogadores estão votando...',
+        BOMBA_RELOGIO: '💣 A bomba está sendo passada...',
+    };
+    return msgs[tipo] || 'Aguardando decisão dos jogadores...';
 }
 
 let intervaloEventoAntes = null;
@@ -1890,14 +1955,23 @@ function mostrarInterfaceBomba(evento, painel) {
 
 async function passarBomba() {
     const alvo = obterAlvoSelecionado();
-    window._alvoEventoSelecionado = null; // limpa após usar
+    window._alvoEventoSelecionado = null;
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
-    const resp = await enviarAcaoEvento({ tipo: 'BOMBA_RELOGIO', acao: 'PASSAR', alvo });
+
+    const resp = await enviarAcaoEvento({
+        tipo: 'BOMBA_RELOGIO', acao: 'PASSAR', alvo
+    });
+
     const painel = obterPainelEvento();
-    if (painel) painel.innerHTML = resp?.explodiu
-        ? '<p class="evento-info-neutro">💥 A bomba explodiu!</p>'
-        : `<p class="evento-info-neutro">💣 Bomba passada para ${alvo}!</p>`;
-    sinalizarEventoConcluido();
+    if (resp?.explodiu) {
+        if (painel) painel.innerHTML =
+            '<p class="evento-info-neutro">💥 A bomba explodiu em você! -4 moedas</p>';
+        // Não sinaliza concluído — servidor vai enviar DECISAO após explosão
+    } else {
+        if (painel) painel.innerHTML =
+            `<p class="evento-info-neutro">💣 Bomba passada para ${alvo}!</p>`;
+        // Não sinaliza concluído — aguarda a bomba explodir
+    }
 }
 
 async function enviarAcaoEvento(dados) {

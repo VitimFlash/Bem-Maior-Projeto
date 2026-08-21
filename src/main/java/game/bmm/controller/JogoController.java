@@ -29,6 +29,8 @@ public class JogoController {
 
     private final Map<String, String> liderEleito =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Map<String, Object>> estadoBomba =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     // =============================================
     // REST ENDPOINTS
@@ -69,7 +71,91 @@ public class JogoController {
                     mensageiro.convertAndSend("/topic/sala/" + codigoSala, estado);
                 }
 
+                if ("BOMBA_RELOGIO".equals(tipo) && "PASSAR".equals(acao)) {
+                    return processarPassagemBomba(codigoSala, username, alvo, auth);
+                }
+
                 return ResponseEntity.ok(resultado);
+            } catch (RuntimeException e) {
+                return ResponseEntity.badRequest().body(e.getMessage());
+            }
+        }
+
+        private ResponseEntity<?> processarPassagemBomba(String codigoSala,
+                                                         String username, String proximoPortador, Authentication auth) {
+            try {
+                Map<String, Object> bomba = estadoBomba.get(codigoSala);
+                if (bomba == null) return ResponseEntity.badRequest().body("Bomba não encontrada.");
+
+                int ticks = (int) bomba.get("ticks");
+                ticks--;
+                bomba.put("ticks", ticks);
+                bomba.put("portador", proximoPortador);
+                estadoBomba.put(codigoSala, bomba);
+
+                System.out.println("=== BOMBA === Portador: " + proximoPortador +
+                        " Ticks restantes: " + ticks);
+
+                if (ticks <= 0) {
+                    // EXPLODIU — aplica penalidade no portador atual (quem passou)
+                    Sala sala = salaRepository.findByCodigo(codigoSala)
+                            .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
+                    Jogador portadorAtual = jogadorRepository.findBySalaAndAtivoTrue(sala)
+                            .stream()
+                            .filter(j -> j.getUsuario().getUsername().equals(username))
+                            .findFirst().orElse(null);
+
+                    if (portadorAtual != null) {
+                        portadorAtual.setBemPessoal(portadorAtual.getBemPessoal() - 4);
+                        jogadorRepository.save(portadorAtual);
+                    }
+
+                    // Notifica explosão para todos
+                    MensagemResultadoEvento msgExplosao = new MensagemResultadoEvento();
+                    msgExplosao.nomeEvento = "BOMBA_RELOGIO";
+                    msgExplosao.emoji = "💥";
+                    msgExplosao.mensagem = "💥 BOOM! " + username +
+                            " estava com a bomba e perdeu 4 moedas!";
+                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgExplosao);
+
+                    estadoBomba.remove(codigoSala);
+
+                    // Agora sim libera a decisão para todos
+                    new Thread(() -> {
+                        try {
+                            Thread.sleep(3000);
+                            EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
+                            estadoDecisao.setFase("DECISAO");
+                            estadoDecisao.setMensagem("Faça sua escolha!");
+                            mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDecisao);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }).start();
+
+                    return ResponseEntity.ok(Map.of("explodiu", true));
+                }
+
+                // Passa bomba para próximo portador
+                mensageiro.convertAndSendToUser(proximoPortador,
+                        "/queue/estado-jogador-evento",
+                        Map.of(
+                                "fase", "DECISAO_EVENTO_ANTES",
+                                "eventoAtualInfo", Map.of(
+                                        "tipo", "BOMBA_RELOGIO",
+                                        "souPortador", true,
+                                        "requerDecisao", true,
+                                        "descricao", "💣 Você recebeu a bomba! Passe-a rapidamente!"
+                                )
+                        )
+                );
+
+                // Notifica todos que a bomba foi passada (sem revelar para quem)
+                EstadoSala estadoAtualizado = jogoService.montarEstadoSala(codigoSala);
+                estadoAtualizado.setMensagem("💣 A bomba foi passada...");
+                mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoAtualizado);
+
+                return ResponseEntity.ok(Map.of("explodiu", false));
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
             }
@@ -266,6 +352,45 @@ public class JogoController {
                     }
                 }
 
+                String mensagemVeneno = null;
+                if (rodadaAtualEv != null && rodadaAtualEv.getEvento() != null &&
+                        "VENENO".equals(rodadaAtualEv.getEvento().getTipo())) {
+
+                    String alvoVenenoId = rodadaAtualEv.getEvento().getJogadorAlvoId();
+                    // alvoVenenoId aqui seria o ID da vítima escolhida
+                    // Verificar se a vítima colocou todas as moedas nos tributos
+                    if (alvoVenenoId != null) {
+                        List<Decisao> decisoesEv = decisaoRepository.findByRodada(rodadaAtualEv);
+                        boolean venenoAtivado = decisoesEv.stream()
+                                .filter(d -> d.getJogador().getId().toString().equals(alvoVenenoId))
+                                .anyMatch(d -> d.getMoedasTributo() < 5);
+
+                        if (venenoAtivado) {
+                            // Aplica penalidade
+                            jogadorRepository.findById(Long.parseLong(alvoVenenoId))
+                                    .ifPresent(vitima -> {
+                                        vitima.setBemPessoal(vitima.getBemPessoal() - 5);
+                                        jogadorRepository.save(vitima);
+                                    });
+                            mensagemVeneno = "ativado";
+                        } else {
+                            mensagemVeneno = "naoAtivado";
+                        }
+                    }
+                }
+
+                // Envia resultado do veneno antes da revelação
+                if (mensagemVeneno != null) {
+                    MensagemResultadoEvento msgVeneno = new MensagemResultadoEvento();
+                    msgVeneno.nomeEvento = "VENENO";
+                    msgVeneno.emoji = "🧪";
+                    msgVeneno.mensagem = "ativado".equals(mensagemVeneno)
+                            ? "🧪 O veneno foi ativado! A vítima perdeu 5 moedas do bem-pessoal!"
+                            : "🧪 O veneno não foi ativado! A vítima colocou todas as moedas nos tributos.";
+                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgVeneno);
+                    Thread.sleep(5000);
+                }
+
                 // Processa tributos
                 Tributo tributo = jogoService.processarTributos(codigoSala);
                 System.out.println("Tributos OK: " + tributo.getTotalArrecadado());
@@ -435,6 +560,15 @@ public class JogoController {
                         tentativas++;
                     }
                     return;
+                }
+
+                if ("BOMBA_RELOGIO".equals(eventoFinal.getTipo())) {
+                    Map<String, Object> bombaState = new java.util.HashMap<>();
+                    bombaState.put("portador", eventoFinal.getJogadorAlvoId());
+                    bombaState.put("ticks", eventoFinal.getValorEfeito());
+                    estadoBomba.put(codigoSala, bombaState);
+                    System.out.println("=== BOMBA INICIADA === Ticks: " +
+                            eventoFinal.getValorEfeito());
                 }
 
                 // Se evento decide ANTES das moedas
