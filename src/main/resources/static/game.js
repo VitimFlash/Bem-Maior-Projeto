@@ -95,6 +95,11 @@ function mostrarAguardoEvento(evento) {
     const painelExistente = document.getElementById('painel-evento-antes');
     if (painelExistente) painelExistente.remove();
 
+    if (intervaloEventoAntes) {
+        clearInterval(intervaloEventoAntes);
+        intervaloEventoAntes = null;
+    }
+
     const painel = document.createElement('div');
     painel.id = 'painel-evento-antes';
     painel.className = 'painel-decisao';
@@ -107,6 +112,36 @@ function mostrarAguardoEvento(evento) {
         </div>
     `;
     document.body.appendChild(painel);
+
+    // Mostra cronômetro igual ao do jogador com cargo
+    mostrarCronometro(45);
+    let segundos = 45;
+
+    intervaloEventoAntes = setInterval(() => {
+        segundos--;
+        const val = document.getElementById('cronometro-valor');
+        if (val) {
+            val.textContent = segundos;
+            val.style.color = '#0f1923';
+            const container = document.getElementById('cronometro-evento-fixo');
+            if (container) {
+                if (segundos <= 10) container.style.background = 'var(--perigo)';
+                else if (segundos <= 20) container.style.background = 'var(--destaque)';
+            }
+        }
+        if (segundos <= 0) {
+            clearInterval(intervaloEventoAntes);
+            intervaloEventoAntes = null;
+            esconderCronometro();
+            // Quando o tempo acaba, remove o painel e mostra decisão
+            const p = document.getElementById('painel-evento-antes');
+            if (p) p.remove();
+            eventoAntesConcluido = true;
+            if (estadoAtual && !jaConfirmouDecisao) {
+                mostrarFaseDecisao(estadoAtual);
+            }
+        }
+    }, 1000);
 }
 
 async function buscarEstadoAtual() {
@@ -192,36 +227,46 @@ function tratarMensagemSala(dados) {
             break;
 
         case 'DECISAO':
-    case 'EM_JOGO':
-        estadoAtual = dados;
+        case 'EM_JOGO':
+            estadoAtual = dados;
 
-        const painelAntes = document.getElementById('painel-evento-antes');
-        if (painelAntes) painelAntes.remove();
+            // Remove TODOS os painéis de evento
+            const painelAntesD = document.getElementById('painel-evento-antes');
+            if (painelAntesD) painelAntesD.remove();
 
-        const painelDisc = document.getElementById('painel-discussao');
-        if (painelDisc) painelDisc.remove();
+            const painelDiscD = document.getElementById('painel-discussao');
+            if (painelDiscD) painelDiscD.remove();
 
-        if (intervaloDiscussao) {
-            clearInterval(intervaloDiscussao);
-            intervaloDiscussao = null;
-        }
+            if (intervaloDiscussao) {
+                clearInterval(intervaloDiscussao);
+                intervaloDiscussao = null;
+            }
 
-        atualizarMesa(dados);
-        atualizarInfoRodada(dados);
+            // Para cronômetro de evento se estiver rodando
+            if (intervaloEventoAntes) {
+                clearInterval(intervaloEventoAntes);
+                intervaloEventoAntes = null;
+                esconderCronometro();
+            }
 
-        if (!jaConfirmouDecisao) {
-            mostrarFaseDecisao(dados);
-        }
+            atualizarMesa(dados);
+            atualizarInfoRodada(dados);
 
-        // Evento após decisão — só mostra uma vez e não limpa
-        if (dados.decisaoEventoDepois && dados.eventoAtualInfo &&
-            !jaMostrouDecisaoEvento) {
-            jaMostrouDecisaoEvento = true;
-            eventoAtual = dados.eventoAtualInfo;
-            // Guarda referência para reexibir se necessário
-            window._eventoDepoisPendente = dados.eventoAtualInfo;
-            setTimeout(() => mostrarInterfaceEvento(dados.eventoAtualInfo), 500);
-        }
+            // Marca evento como concluído
+            eventoAntesConcluido = true;
+            eventoPendente = false;
+
+            if (!jaConfirmouDecisao) {
+                mostrarFaseDecisao(dados);
+            }
+
+            if (dados.decisaoEventoDepois && dados.eventoAtualInfo &&
+                !jaMostrouDecisaoEvento) {
+                jaMostrouDecisaoEvento = true;
+                eventoAtual = dados.eventoAtualInfo;
+                window._eventoDepoisPendente = dados.eventoAtualInfo;
+                setTimeout(() => mostrarInterfaceEvento(dados.eventoAtualInfo), 500);
+            }
         break;
 
         case 'LIDERANCA_VOTOS':

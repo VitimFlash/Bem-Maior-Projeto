@@ -62,17 +62,41 @@ public class JogoController {
                 String alvo = (String) body.get("alvo");
                 String username = auth.getName();
 
+                // Tratamento especial para bomba
+                if ("BOMBA_RELOGIO".equals(tipo) && "PASSAR".equals(acao)) {
+                    return processarPassagemBomba(codigoSala, username, alvo, auth);
+                }
+
                 Map<String, Object> resultado = jogoService.processarAcaoEvento(
                         codigoSala, username, tipo, acao, alvo, body);
 
+                // Notifica sala se necessário
                 if (resultado.containsKey("notificarSala")) {
                     EstadoSala estado = jogoService.montarEstadoSala(codigoSala);
                     estado.setMensagem((String) resultado.get("mensagemSala"));
                     mensageiro.convertAndSend("/topic/sala/" + codigoSala, estado);
                 }
 
-                if ("BOMBA_RELOGIO".equals(tipo) && "PASSAR".equals(acao)) {
-                    return processarPassagemBomba(codigoSala, username, alvo, auth);
+                // Após qualquer ação de evento que decide ANTES das moedas,
+                // envia DECISAO para TODOS os jogadores
+                boolean eventoDecideAntes = jogoService
+                        .eventoDecideAntesDasMoedas(tipo);
+
+                if (eventoDecideAntes && !resultado.containsKey("aguardandoMais")) {
+                    new Thread(() -> {
+                        try {
+                            Thread.sleep(1000);
+                            EstadoSala estadoDecisao =
+                                    jogoService.montarEstadoSala(codigoSala);
+                            estadoDecisao.setFase("DECISAO");
+                            estadoDecisao.setMensagem(
+                                    "Evento concluído! Faça sua escolha.");
+                            mensageiro.convertAndSend(
+                                    "/topic/sala/" + codigoSala, estadoDecisao);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }).start();
                 }
 
                 return ResponseEntity.ok(resultado);
