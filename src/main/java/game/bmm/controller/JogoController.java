@@ -99,6 +99,10 @@ public class JogoController {
                     }).start();
                 }
 
+                if ("DUPLICATA".equals(tipo)) {
+                    return ResponseEntity.ok(resultado);
+                }
+
                 return ResponseEntity.ok(resultado);
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
@@ -601,9 +605,6 @@ public class JogoController {
                         String username = jogador.getUsuario().getUsername();
                         EstadoSala estadoDecisaoEvento =
                                 jogoService.montarEstadoSala(codigoSala);
-                        estadoDecisaoEvento.setFase("DECISAO_EVENTO_ANTES");
-                        estadoDecisaoEvento.setDecisaoEventoAntes(true);
-
                         EstadoSala.EventoInfo info = jogoService
                                 .montarInfoEventoParaJogador(eventoFinal, username, sala);
                         estadoDecisaoEvento.setEventoAtualInfo(info);
@@ -629,7 +630,6 @@ public class JogoController {
                 !"LIDERANCA".equals(eventoSorteado.getTipo()) &&
                 !"BOLHA".equals(eventoSorteado.getTipo()) &&
                 !"FOGUEIRA".equals(eventoSorteado.getTipo())) {
-            estadoDecisao.setDecisaoEventoDepois(true);
             EstadoSala.EventoInfo info = new EstadoSala.EventoInfo();
             info.tipo = eventoSorteado.getTipo();
             info.requerDecisao = eventoSorteado.isRequerDecisao();

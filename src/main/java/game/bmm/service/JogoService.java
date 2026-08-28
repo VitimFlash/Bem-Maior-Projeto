@@ -549,14 +549,8 @@ public class JogoService {
     public boolean eventoDecideAntesDasMoedas(String tipo) {
         return switch (tipo) {
             case "VENENO", "LIDERANCA", "IGUALDADE",
-                 "BOMBA_RELOGIO", "PARCEIROS", "ROUBO", "COPIA", "TRAICAO"-> true;
-            default -> false;
-        };
-    }
-
-    public boolean eventoDecideDepoisDasMoedas(String tipo) {
-        return switch (tipo) {
-            case  "ROLETA", "DUPLICATA", "EXPOSICAO", "OSMOSE" -> false;
+                 "BOMBA_RELOGIO", "PARCEIROS", "ROUBO", "COPIA", "TRAICAO",
+                 "ROLETA", "DUPLICATA", "EXPOSICAO", "OSMOSE"-> true;
             default -> false;
         };
     }

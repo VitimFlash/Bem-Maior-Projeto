@@ -259,14 +259,6 @@ function tratarMensagemSala(dados) {
             if (!jaConfirmouDecisao) {
                 mostrarFaseDecisao(dados);
             }
-
-            if (dados.decisaoEventoDepois && dados.eventoAtualInfo &&
-                !jaMostrouDecisaoEvento) {
-                jaMostrouDecisaoEvento = true;
-                eventoAtual = dados.eventoAtualInfo;
-                window._eventoDepoisPendente = dados.eventoAtualInfo;
-                setTimeout(() => mostrarInterfaceEvento(dados.eventoAtualInfo), 500);
-            }
         break;
 
         case 'LIDERANCA_VOTOS':
@@ -493,12 +485,6 @@ function mostrarFaseDecisao(dados) {
     document.getElementById('btn-confirmar').textContent = 'Confirmar';
     document.getElementById('info-fase').textContent = 'Decidindo';
     document.getElementById('info-fase').className = 'badge-fase fase-decisao';
-
-    if (dados.decisaoEventoDepois && dados.eventoAtualInfo && !jaMostrouDecisaoEvento) {
-        jaMostrouDecisaoEvento = true;
-        eventoAtual = dados.eventoAtualInfo;
-        setTimeout(() => mostrarInterfaceEvento(dados.eventoAtualInfo), 500);
-    }
 }
 
 function ajustarMoeda(tipo, delta) {

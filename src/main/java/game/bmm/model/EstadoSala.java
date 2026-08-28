@@ -20,8 +20,6 @@ public class EstadoSala {
     private String jogadorEliminado;
     private List<String> jogadoresEliminados;
     private String vencedor;
-    private boolean decisaoEventoAntes;
-    private boolean decisaoEventoDepois;
     private Map<String, Integer> contasPessoais; // nome → conta-pessoal (público)
     private EventoInfo eventoAtualInfo;
 
@@ -51,11 +49,6 @@ public class EstadoSala {
 
     public int getMoedasDescartadas() { return moedasDescartadas; }
     public void setMoedasDescartadas(int m) { this.moedasDescartadas = m; }
-
-    public boolean isDecisaoEventoAntes() { return decisaoEventoAntes; }
-    public void setDecisaoEventoAntes(boolean d) { this.decisaoEventoAntes = d; }
-    public boolean isDecisaoEventoDepois() { return decisaoEventoDepois; }
-    public void setDecisaoEventoDepois(boolean d) { this.decisaoEventoDepois = d; }
 
     public List<String> getJogadoresEliminados() { return jogadoresEliminados; }
     public void setJogadoresEliminados(List<String> j) { this.jogadoresEliminados = j; }
