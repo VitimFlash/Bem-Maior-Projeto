@@ -47,37 +47,52 @@ function conectarWebSocket() {
             });
 
             stompClient.subscribe('/user/queue/estado-jogador-evento', (msg) => {
-                const dados = JSON.parse(msg.body);
-                console.log('Evento personalizado:', dados);
+                console.log('=== EVENTO PERSONALIZADO ===', msg.body);
+                try {
+                    const dados = JSON.parse(msg.body);
 
-                if (dados.fase === 'EVENTO' && dados.eventoAtualInfo) {
-                    mostrarEvento(dados.eventoAtualInfo);
-                }
-
-                if (dados.fase === 'DECISAO_EVENTO_ANTES' && dados.eventoAtualInfo) {
-                    eventoAntesConcluido = false;
-                    eventoPendente = true;
-
-                    if (dados.contasPessoais) {
-                        estadoAtual = { ...estadoAtual, ...dados, fase: 'DECISAO' };
+                    if (dados.fase === 'EVENTO' && dados.eventoAtualInfo) {
+                        mostrarEvento(dados.eventoAtualInfo);
+                        return;
                     }
 
-                    const temCargo = dados.eventoAtualInfo.souExecutor ||
-                        dados.eventoAtualInfo.souFeiticeiro ||
-                        dados.eventoAtualInfo.souParceiro ||
-                        dados.eventoAtualInfo.souExpositor ||
-                        dados.eventoAtualInfo.souTraidor ||
-                        dados.eventoAtualInfo.souPortador;
+                    if (dados.fase === 'DECISAO_EVENTO_ANTES' && dados.eventoAtualInfo) {
+                        console.log('Recebeu DECISAO_EVENTO_ANTES:', dados.eventoAtualInfo);
+                        eventoAntesConcluido = false;
+                        eventoPendente = true;
 
-                    if (temCargo) {
-                        // Jogador com cargo — mostra interface de decisão com cronômetro
+                        if (dados.contasPessoais) {
+                            estadoAtual = Object.assign({}, estadoAtual, dados);
+                            estadoAtual.fase = 'DECISAO';
+                        }
+
+                        const temCargo = dados.eventoAtualInfo.souExecutor ||
+                            dados.eventoAtualInfo.souFeiticeiro ||
+                            dados.eventoAtualInfo.souParceiro ||
+                            dados.eventoAtualInfo.souExpositor ||
+                            dados.eventoAtualInfo.souTraidor ||
+                            dados.eventoAtualInfo.souPortador;
+
+                        console.log('Tem cargo:', temCargo);
+
+                        // Esconde painel de decisão enquanto evento está ativo
                         document.getElementById('painel-decisao').classList.add('escondido');
-                        eventoAtual = dados.eventoAtualInfo;
-                        mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
-                    } else {
-                        // Jogador sem cargo — mostra aguardo sem cronômetro
-                        mostrarAguardoEvento(dados.eventoAtualInfo);
+
+                        if (temCargo) {
+                            mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
+                        } else {
+                            mostrarAguardoEvento(dados.eventoAtualInfo);
+                        }
+                        return;
                     }
+
+                    if (dados.fase === 'LIDERANCA_DISTRIBUIR') {
+                        mostrarInterfaceDistribuicaoLider(dados);
+                        return;
+                    }
+
+                } catch(e) {
+                    console.error('Erro ao processar evento personalizado:', e);
                 }
             });
 
@@ -823,26 +838,38 @@ function mostrarResultadoEvento(dados) {
 }
 
 function mostrarCronometro(segundos) {
+    console.log('=== MOSTRANDO CRONÔMETRO ===', segundos);
     const anterior = document.getElementById('cronometro-evento-fixo');
     if (anterior) anterior.remove();
 
     const el = document.createElement('div');
     el.id = 'cronometro-evento-fixo';
     el.style.cssText = `
-        position: fixed; bottom: 24px; right: 24px;
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
         background: var(--destaque);
-        border-radius: 16px; padding: 16px 28px;
-        text-align: center; z-index: 9999;
+        border-radius: 16px;
+        padding: 16px 28px;
+        text-align: center;
+        z-index: 99999;
         box-shadow: 0 4px 20px rgba(0,0,0,0.5);
         min-width: 120px;
+        display: block !important;
+        visibility: visible !important;
     `;
     el.innerHTML = `
-        <div style="font-size:0.8rem;color:#0f1923;margin-bottom:4px;
-            font-weight:bold;">⏱️ Tempo restante</div>
-        <div id="cronometro-valor" style="font-size:3.5rem;
-            font-weight:bold;color:#0f1923;">${segundos}</div>
+        <div style="font-size:0.8rem;color:#0f1923;
+            margin-bottom:4px;font-weight:bold;">
+            ⏱️ Tempo restante
+        </div>
+        <div id="cronometro-valor"
+            style="font-size:3.5rem;font-weight:bold;color:#0f1923;">
+            ${segundos}
+        </div>
     `;
     document.body.appendChild(el);
+    console.log('Cronômetro adicionado ao DOM:', el);
 }
 
 function esconderCronometro() {

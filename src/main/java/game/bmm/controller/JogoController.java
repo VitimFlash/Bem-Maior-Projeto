@@ -111,6 +111,20 @@ public class JogoController {
 
         private ResponseEntity<?> processarPassagemBomba(String codigoSala,
                                                          String username, String proximoPortador, Authentication auth) {
+            System.out.println("=== PASSANDO BOMBA PARA: " + proximoPortador + " ===");
+            mensageiro.convertAndSendToUser(proximoPortador,
+                "/queue/estado-jogador-evento",
+                Map.of(
+                    "fase", "DECISAO_EVENTO_ANTES",
+                    "eventoAtualInfo", Map.of(
+                        "tipo", "BOMBA_RELOGIO",
+                        "souPortador", true,
+                        "requerDecisao", true,
+                        "descricao", "💣 Você recebeu a bomba! Passe-a rapidamente!"
+                    )
+                )
+            );
+            System.out.println("=== MENSAGEM ENVIADA PARA: " + proximoPortador + " ===");
             try {
                 Map<String, Object> bomba = estadoBomba.get(codigoSala);
                 if (bomba == null) return ResponseEntity.badRequest().body("Bomba não encontrada.");
@@ -558,7 +572,26 @@ public class JogoController {
 
                 // Aguarda 8 segundos de animação
                 Thread.sleep(8000);
+                Thread.sleep(2000);
 
+                for (Jogador jogador : ativos) {
+                    String username = jogador.getUsuario().getUsername();
+                    EstadoSala estadoDecisaoEvento = jogoService.montarEstadoSala(codigoSala);
+                    estadoDecisaoEvento.setFase("DECISAO_EVENTO_ANTES");
+
+                    EstadoSala.EventoInfo info = jogoService
+                            .montarInfoEventoParaJogador(eventoFinal, username, sala);
+                    estadoDecisaoEvento.setEventoAtualInfo(info);
+
+                    System.out.println("Enviando DECISAO_EVENTO_ANTES para: " + username +
+                            " souExecutor: " + info.souExecutor +
+                            " souFeiticeiro: " + info.souFeiticeiro +
+                            " souTraidor: " + info.souTraidor);
+
+                    mensageiro.convertAndSendToUser(username,
+                            "/queue/estado-jogador-evento", estadoDecisaoEvento);
+                }
+                
                 // Tratamento especial para LIDERANÇA
                 if ("LIDERANCA".equals(eventoFinal.getTipo())) {
                     final String nomeLider = ativos.stream()
