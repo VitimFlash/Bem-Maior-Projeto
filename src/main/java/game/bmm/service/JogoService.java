@@ -4,6 +4,7 @@ import game.bmm.model.*;
 import game.bmm.repository.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import game.bmm.repository.EventoRepository;
 
 import java.util.*;
 
@@ -15,6 +16,7 @@ public class JogoService {
     @Autowired private RodadaRepository rodadaRepository;
     @Autowired private DecisaoRepository decisaoRepository;
     @Autowired private TributoRepository tributoRepository;
+    @Autowired private EventoRepository eventoRepository;
 
     // Inicia a primeira rodada
     public Rodada iniciarRodada(String codigoSala) {
@@ -345,8 +347,17 @@ public class JogoService {
             }
             case "VENENO" -> {
                 if ("ENVENENAR".equals(acao) && alvo != null) {
+                    // Armazena o ID da vítima no valorEfeito do evento
+                    // para verificar depois
+                    Rodada rodadaAtiva = buscarRodadaAtiva(sala);
+                    if (rodadaAtiva.getEvento() != null) {
+                        rodadaAtiva.getEvento().setJogadorAlvoId(
+                                alvo.getId().toString()); // sobrescreve com a vítima
+                        eventoRepository.save(rodadaAtiva.getEvento());
+                    }
                     resultado.put("alvoVeneno", alvo.getId());
-                    resultado.put("mensagem", "Veneno preparado!");
+                    resultado.put("mensagem", "Veneno preparado contra " +
+                            alvo.getUsuario().getUsername() + "!");
                     resultado.put("notificarSala", true);
                     resultado.put("mensagemSala", "🧪 O Feiticeiro escolheu sua vítima!");
                 } else if ("PULAR".equals(acao)) {
@@ -438,18 +449,21 @@ public class JogoService {
             }
             case "TRAICAO" -> {
                 if ("TRAIR".equals(acao) && alvo != null) {
+                    // Penaliza a vítima
                     alvo.setBemPessoal(alvo.getBemPessoal() - 3);
                     jogadorRepository.save(alvo);
-                    resultado.put("traido", alvo.getId());
+                    resultado.put("traido", alvo.getUsuario().getUsername());
+                    resultado.put("notificarSala", true);
+                    resultado.put("mensagemSala", "🔪 A traição foi executada!");
                 } else if ("ADIVINHAR".equals(acao) && alvo != null) {
-                    // Simplificado — em produção comparar com traidor real
+                    // Verifica se acertou — comparar com traidor real
+                    // Por simplicidade usa Random por ora
                     boolean acertou = new java.util.Random().nextBoolean();
                     if (acertou) {
-                        alvo.setBemPessoal(alvo.getBemPessoal() - 3);
+                        executor.setBemPessoal(executor.getBemPessoal() + 3);
                     } else {
                         executor.setBemPessoal(executor.getBemPessoal() - 3);
                     }
-                    jogadorRepository.save(alvo);
                     jogadorRepository.save(executor);
                     resultado.put("acertou", acertou);
                 }

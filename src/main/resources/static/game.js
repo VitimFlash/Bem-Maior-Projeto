@@ -32,10 +32,15 @@ function conectarWebSocket() {
     stompClient = Stomp.over(socket);
     stompClient.debug = null;
 
-    stompClient.connect({},
+    // Headers de autenticação — necessário para convertAndSendToUser
+    const headers = {
+        login: usernameAtual,
+        passcode: usernameAtual
+    };
+
+    stompClient.connect(headers,
         () => {
-            console.log('WebSocket conectado!');
-            document.getElementById('info-fase').textContent = 'Conectado';
+            console.log('WebSocket conectado como:', usernameAtual);
 
             stompClient.subscribe('/topic/sala/' + codigoSala, (msg) => {
                 console.log('Mensagem sala:', msg.body);
@@ -46,64 +51,94 @@ function conectarWebSocket() {
                 tratarEstadoJogador(JSON.parse(msg.body));
             });
 
+            stompClient.subscribe('/user/' + usernameAtual +
+                '/queue/estado-jogador-evento', (msg) => {
+                console.log('=== EVENTO via canal direto ===', msg.body);
+                processarEventoPersonalizado(JSON.parse(msg.body));
+            });
+
+            // Subscribe no canal padrão também
             stompClient.subscribe('/user/queue/estado-jogador-evento', (msg) => {
-                console.log('=== EVENTO PERSONALIZADO ===', msg.body);
-                try {
-                    const dados = JSON.parse(msg.body);
+                console.log('=== EVENTO via canal user ===', msg.body);
+                processarEventoPersonalizado(JSON.parse(msg.body));
+            });
 
-                    if (dados.fase === 'EVENTO' && dados.eventoAtualInfo) {
-                        mostrarEvento(dados.eventoAtualInfo);
-                        return;
-                    }
-
-                    if (dados.fase === 'DECISAO_EVENTO_ANTES' && dados.eventoAtualInfo) {
-                        console.log('Recebeu DECISAO_EVENTO_ANTES:', dados.eventoAtualInfo);
-                        eventoAntesConcluido = false;
-                        eventoPendente = true;
-
-                        if (dados.contasPessoais) {
-                            estadoAtual = Object.assign({}, estadoAtual, dados);
-                            estadoAtual.fase = 'DECISAO';
-                        }
-
-                        const temCargo = dados.eventoAtualInfo.souExecutor ||
-                            dados.eventoAtualInfo.souFeiticeiro ||
-                            dados.eventoAtualInfo.souParceiro ||
-                            dados.eventoAtualInfo.souExpositor ||
-                            dados.eventoAtualInfo.souTraidor ||
-                            dados.eventoAtualInfo.souPortador;
-
-                        console.log('Tem cargo:', temCargo);
-
-                        // Esconde painel de decisão enquanto evento está ativo
-                        document.getElementById('painel-decisao').classList.add('escondido');
-
-                        if (temCargo) {
-                            mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
-                        } else {
-                            mostrarAguardoEvento(dados.eventoAtualInfo);
-                        }
-                        return;
-                    }
-
-                    if (dados.fase === 'LIDERANCA_DISTRIBUIR') {
-                        mostrarInterfaceDistribuicaoLider(dados);
-                        return;
-                    }
-
-                } catch(e) {
-                    console.error('Erro ao processar evento personalizado:', e);
-                }
+            stompClient.subscribe('/topic/evento/' + codigoSala +'/' + usernameAtual, (msg) => {
+                console.log('=== EVENTO via canal fallback ===', msg.body);
+                processarEventoPersonalizado(JSON.parse(msg.body));
             });
 
             buscarEstadoAtual();
         },
         (erro) => {
             console.error('Erro WebSocket:', erro);
-            document.getElementById('info-fase').textContent = 'Reconectando...';
             setTimeout(conectarWebSocket, 3000);
         }
     );
+}
+
+function processarEventoPersonalizado(dados) {
+    console.log('Processando evento personalizado:', dados.fase);
+
+    if (dados.fase === 'EVENTO' && dados.eventoAtualInfo) {
+        mostrarEvento(dados.eventoAtualInfo);
+        return;
+    }
+
+    if (dados.fase === 'DECISAO_EVENTO_ANTES' && dados.eventoAtualInfo) {
+        console.log('Recebeu DECISAO_EVENTO_ANTES!');
+        eventoAntesConcluido = false;
+        eventoPendente = true;
+
+        if (dados.contasPessoais) {
+            estadoAtual = Object.assign({}, estadoAtual, dados);
+            estadoAtual.fase = 'DECISAO';
+        }
+
+        const temCargo = dados.eventoAtualInfo.souExecutor ||
+            dados.eventoAtualInfo.souFeiticeiro ||
+            dados.eventoAtualInfo.souParceiro ||
+            dados.eventoAtualInfo.souExpositor ||
+            dados.eventoAtualInfo.souTraidor ||
+            dados.eventoAtualInfo.souPortador;
+
+        console.log('Tem cargo:', temCargo, dados.eventoAtualInfo);
+
+        document.getElementById('painel-decisao').classList.add('escondido');
+
+        if (temCargo) {
+            mostrarInterfaceEventoAntes(dados.eventoAtualInfo);
+        } else {
+            mostrarAguardoEvento(dados.eventoAtualInfo);
+        }
+        return;
+    }
+
+    if (dados.fase === 'LIDERANCA_DISTRIBUIR') {
+        mostrarInterfaceDistribuicaoLider(dados);
+        return;
+    }
+
+    if (dados.fase === 'TRAICAO_ADIVINHAR') {
+    setTimeout(() => {
+        const painel = document.getElementById('painel-evento-extra');
+        if (painel) {
+            painel.classList.remove('escondido');
+            painel.innerHTML = `
+                <div class="evento-interface">
+                    <p>🔪 Você foi <strong>traído</strong>!
+                       Tente adivinhar quem foi o traidor:</p>
+                    ${seletorJogadores()}
+                    <button class="btn-evento-acao"
+                        onclick="adivinharTraidor()">
+                        🔍 Acusar
+                    </button>
+                </div>
+            `;
+        }
+    }, 500);
+    return;
+}
 }
 
 function mostrarAguardoEvento(evento) {
@@ -392,6 +427,56 @@ function atualizarInfoRodada(dados) {
             fases[dados.fase] || dados.fase;
         document.getElementById('info-fase').className =
             'badge-fase fase-' + dados.fase.toLowerCase();
+    }
+}
+
+async function sinalizarEventoConcluido() {
+    if (intervaloEventoAntes) {
+        clearInterval(intervaloEventoAntes);
+        intervaloEventoAntes = null;
+    }
+    esconderCronometro();
+    window._alvoEventoSelecionado = null;
+
+    // Remove painel do evento
+    setTimeout(() => {
+        const p = document.getElementById('painel-evento-antes');
+        if (p) p.remove();
+    }, 500);
+
+    // Notifica servidor que este jogador concluiu
+    try {
+        const tipoEvento = eventoAtual ? eventoAtual.tipo : 'DESCONHECIDO';
+        const resp = await fetch('/jogo/evento/concluir', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                codigoSala,
+                tipo: tipoEvento
+            })
+        });
+
+        if (resp.ok) {
+            const dados = await resp.json();
+            console.log('Evento concluído:', dados.concluidos +
+                '/' + dados.total);
+
+            // Só mostra decisão quando TODOS concluíram
+            // (o servidor envia DECISAO via WebSocket)
+        }
+    } catch(e) {
+        console.error('Erro ao concluir evento:', e);
+        // Fallback — mostra decisão localmente
+        eventoAntesConcluido = true;
+        eventoPendente = false;
+        if (estadoAtual && !jaConfirmouDecisao) {
+            mostrarFaseDecisao(estadoAtual);
+        }
+    }
+
+    if (resolverEventoPendente) {
+        resolverEventoPendente();
+        resolverEventoPendente = null;
     }
 }
 
@@ -2021,14 +2106,34 @@ async function passarBomba() {
     });
 
     const painel = obterPainelEvento();
+
     if (resp?.explodiu) {
         if (painel) painel.innerHTML =
             '<p class="evento-info-neutro">💥 A bomba explodiu em você! -4 moedas</p>';
-        // Não sinaliza concluído — servidor vai enviar DECISAO após explosão
+        // Servidor já envia DECISAO após explosão
+        esconderCronometro();
+        if (intervaloEventoAntes) {
+            clearInterval(intervaloEventoAntes);
+            intervaloEventoAntes = null;
+        }
     } else {
         if (painel) painel.innerHTML =
             `<p class="evento-info-neutro">💣 Bomba passada para ${alvo}!</p>`;
-        // Não sinaliza concluído — aguarda a bomba explodir
+        // NÃO sinaliza concluído — aguarda explodir
+        // Remove painel pois este jogador não tem mais a bomba
+        setTimeout(() => {
+            const p = document.getElementById('painel-evento-antes');
+            if (p) p.remove();
+            esconderCronometro();
+            if (intervaloEventoAntes) {
+                clearInterval(intervaloEventoAntes);
+                intervaloEventoAntes = null;
+            }
+            // Mostra decisão para quem passou a bomba
+            eventoAntesConcluido = true;
+            eventoPendente = false;
+            if (!jaConfirmouDecisao) mostrarFaseDecisao(estadoAtual);
+        }, 1500);
     }
 }
 

@@ -31,6 +31,10 @@ public class JogoController {
             new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> estadoBomba =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, java.util.concurrent.atomic.AtomicInteger>
+            contadorEventoConcluido = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Integer> totalJogadoresEvento =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     // =============================================
     // REST ENDPOINTS
@@ -52,9 +56,15 @@ public class JogoController {
             }
         }
 
+        @GetMapping("/debug/usuarios-conectados")
+        public ResponseEntity<?> usuariosConectados() {
+            return ResponseEntity.ok("OK");
+        }
+
         @PostMapping("/evento/acao")
         public ResponseEntity<?> acaoEvento(@RequestBody Map<String, Object> body,
                                             Authentication auth) {
+
             try {
                 String codigoSala = (String) body.get("codigoSala");
                 String tipo = (String) body.get("tipo");
@@ -69,19 +79,16 @@ public class JogoController {
 
                 Map<String, Object> resultado = jogoService.processarAcaoEvento(
                         codigoSala, username, tipo, acao, alvo, body);
-
                 // Notifica sala se necessário
                 if (resultado.containsKey("notificarSala")) {
                     EstadoSala estado = jogoService.montarEstadoSala(codigoSala);
                     estado.setMensagem((String) resultado.get("mensagemSala"));
                     mensageiro.convertAndSend("/topic/sala/" + codigoSala, estado);
                 }
-
                 // Após qualquer ação de evento que decide ANTES das moedas,
                 // envia DECISAO para TODOS os jogadores
                 boolean eventoDecideAntes = jogoService
                         .eventoDecideAntesDasMoedas(tipo);
-
                 if (eventoDecideAntes && !resultado.containsKey("aguardandoMais")) {
                     new Thread(() -> {
                         try {
@@ -98,12 +105,81 @@ public class JogoController {
                         }
                     }).start();
                 }
+                if ("TRAICAO".equals(tipo) && "TRAIR".equals(acao) &&
+                        resultado.containsKey("traido")) {
 
+                    String vitima = (String) resultado.get("traido");
+
+                    // Envia interface de adivinhação para a vítima
+                    // durante a fase de decisão das moedas
+                    new Thread(() -> {
+                        try {
+                            Thread.sleep(1000);
+                            MensagemTraicaoAdivinhar msgVitima = new MensagemTraicaoAdivinhar();
+                            msgVitima.descricao = "🔪 Você foi traído! Tente adivinhar quem foi durante a decisão.";
+                            mensageiro.convertAndSendToUser(vitima, "/queue/estado-jogador-evento", msgVitima);
+                            mensageiro.convertAndSend("/topic/evento/" + codigoSala + "/" + vitima, msgVitima);
+                            MensagemConclusaoEvento msgConclusao = new MensagemConclusaoEvento();
+                            msgConclusao.mensagem = "Faça sua escolha!";
+                            mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgConclusao);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }).start();
+                }
                 if ("DUPLICATA".equals(tipo)) {
                     return ResponseEntity.ok(resultado);
                 }
 
+
+
                 return ResponseEntity.ok(resultado);
+            } catch (RuntimeException e) {
+                return ResponseEntity.badRequest().body(e.getMessage());
+            }
+        }
+
+
+        @PostMapping("/evento/concluir")
+        public ResponseEntity<?> concluirEvento(@RequestBody Map<String, Object> body,
+                                                Authentication auth) {
+            try {
+                String codigoSala = (String) body.get("codigoSala");
+
+                // Verifica se contador existe
+                if (!contadorEventoConcluido.containsKey(codigoSala)) {
+                    System.out.println("AVISO: Contador não encontrado para sala " + codigoSala);
+                    return ResponseEntity.ok(Map.of("concluidos", 0, "total", 0));
+                }
+
+                int total = totalJogadoresEvento.getOrDefault(codigoSala, 1);
+                int concluidos = contadorEventoConcluido.get(codigoSala).incrementAndGet();
+
+                System.out.println("=== CONCLUIR EVENTO === " +
+                        auth.getName() + " concluiu. " +
+                        concluidos + "/" + total);
+
+                if (concluidos >= total) {
+                    contadorEventoConcluido.remove(codigoSala);
+                    totalJogadoresEvento.remove(codigoSala);
+
+                    new Thread(() -> {
+                        try {
+                            Thread.sleep(500);
+                            EstadoSala estadoDecisao =
+                                    jogoService.montarEstadoSala(codigoSala);
+                            estadoDecisao.setFase("DECISAO");
+                            estadoDecisao.setMensagem("Faça sua escolha!");
+                            mensageiro.convertAndSend(
+                                    "/topic/sala/" + codigoSala, estadoDecisao);
+                            System.out.println("=== TODOS CONCLUÍRAM — ENVIANDO DECISAO ===");
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }).start();
+                }
+
+                return ResponseEntity.ok(Map.of("concluidos", concluidos, "total", total));
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
             }
@@ -394,43 +470,53 @@ public class JogoController {
                     }
                 }
 
-                String mensagemVeneno = null;
                 if (rodadaAtualEv != null && rodadaAtualEv.getEvento() != null &&
                         "VENENO".equals(rodadaAtualEv.getEvento().getTipo())) {
 
+                    String alvoVenenoUsername = rodadaAtualEv.getEvento().getDescricao();
+                    // A descrição não tem o alvo — precisamos do jogadorAlvoId
                     String alvoVenenoId = rodadaAtualEv.getEvento().getJogadorAlvoId();
-                    // alvoVenenoId aqui seria o ID da vítima escolhida
-                    // Verificar se a vítima colocou todas as moedas nos tributos
-                    if (alvoVenenoId != null) {
-                        List<Decisao> decisoesEv = decisaoRepository.findByRodada(rodadaAtualEv);
-                        boolean venenoAtivado = decisoesEv.stream()
+
+                    System.out.println("=== VENENO === Alvo ID: " + alvoVenenoId);
+
+                    if (alvoVenenoId != null && !alvoVenenoId.isEmpty()) {
+                        // Busca a decisão da vítima nesta rodada
+                        List<Decisao> decisoesRodada =
+                                decisaoRepository.findByRodada(rodadaAtualEv);
+
+                        boolean venenoAtivado = decisoesRodada.stream()
                                 .filter(d -> d.getJogador().getId().toString().equals(alvoVenenoId))
                                 .anyMatch(d -> d.getMoedasTributo() < 5);
 
-                        if (venenoAtivado) {
-                            // Aplica penalidade
-                            jogadorRepository.findById(Long.parseLong(alvoVenenoId))
-                                    .ifPresent(vitima -> {
-                                        vitima.setBemPessoal(vitima.getBemPessoal() - 5);
-                                        jogadorRepository.save(vitima);
-                                    });
-                            mensagemVeneno = "ativado";
-                        } else {
-                            mensagemVeneno = "naoAtivado";
-                        }
-                    }
-                }
+                        System.out.println("=== VENENO ATIVADO: " + venenoAtivado + " ===");
 
-                // Envia resultado do veneno antes da revelação
-                if (mensagemVeneno != null) {
-                    MensagemResultadoEvento msgVeneno = new MensagemResultadoEvento();
-                    msgVeneno.nomeEvento = "VENENO";
-                    msgVeneno.emoji = "🧪";
-                    msgVeneno.mensagem = "ativado".equals(mensagemVeneno)
-                            ? "🧪 O veneno foi ativado! A vítima perdeu 5 moedas do bem-pessoal!"
-                            : "🧪 O veneno não foi ativado! A vítima colocou todas as moedas nos tributos.";
-                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgVeneno);
-                    Thread.sleep(5000);
+                        MensagemResultadoEvento msgVeneno = new MensagemResultadoEvento();
+                        msgVeneno.nomeEvento = "VENENO";
+                        msgVeneno.emoji = "🧪";
+
+                        if (venenoAtivado) {
+                            // Aplica penalidade na vítima
+                            try {
+                                Long idVitima = Long.parseLong(alvoVenenoId);
+                                jogadorRepository.findById(idVitima).ifPresent(vitima -> {
+                                    vitima.setBemPessoal(vitima.getBemPessoal() - 5);
+                                    jogadorRepository.save(vitima);
+                                    System.out.println("Veneno aplicado em: " +
+                                            vitima.getUsuario().getUsername());
+                                });
+                            } catch (NumberFormatException e) {
+                                System.err.println("ID inválido: " + alvoVenenoId);
+                            }
+                            msgVeneno.mensagem = "🧪 O veneno foi ativado! " +
+                                    "A vítima não colocou 5 moedas nos tributos e perdeu 5 moedas!";
+                        } else {
+                            msgVeneno.mensagem = "🧪 O veneno não foi ativado! " +
+                                    "A vítima colocou todas as moedas nos tributos e está salva!";
+                        }
+
+                        mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgVeneno);
+                        Thread.sleep(5000);
+                    }
                 }
 
                 // Processa tributos
@@ -556,6 +642,24 @@ public class JogoController {
                 final Evento eventoFinal = eventoSorteado;
 
                 // Envia estado personalizado para cada jogador
+                EstadoSala estadoEvento = jogoService.montarEstadoSala(codigoSala);
+                estadoEvento.setFase("EVENTO");
+                estadoEvento.setMensagem("⚡ " + eventoFinal.getTipo());
+
+                EstadoSala.EventoInfo infoGeral = new EstadoSala.EventoInfo();
+                infoGeral.tipo = eventoFinal.getTipo();
+                infoGeral.descricao = eventoFinal.getDescricao();
+                infoGeral.requerDecisao = eventoFinal.isRequerDecisao();
+                estadoEvento.setEventoAtualInfo(infoGeral);
+
+                mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoEvento);
+                System.out.println("Animação enviada para todos!");
+
+                Thread.sleep(8000);
+
+                contadorEventoConcluido.put(codigoSala,
+                        new java.util.concurrent.atomic.AtomicInteger(0));
+                totalJogadoresEvento.put(codigoSala, ativos.size());
                 for (Jogador jogador : ativos) {
                     String username = jogador.getUsuario().getUsername();
                     EstadoSala estadoPersonalizado = jogoService.montarEstadoSala(codigoSala);
@@ -565,14 +669,20 @@ public class JogoController {
                     EstadoSala.EventoInfo info = jogoService
                             .montarInfoEventoParaJogador(eventoFinal, username, sala);
                     estadoPersonalizado.setEventoAtualInfo(info);
-
-                    mensageiro.convertAndSendToUser(username,
-                            "/queue/estado-jogador-evento", estadoPersonalizado);
                 }
 
                 // Aguarda 8 segundos de animação
                 Thread.sleep(8000);
                 Thread.sleep(2000);
+
+                Sala salaAtual = salaRepository.findByCodigo(codigoSala)
+                        .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
+                int totalAtivos = jogadorRepository.findBySalaAndAtivoTrue(salaAtual).size();
+                contadorEventoConcluido.put(codigoSala,
+                        new java.util.concurrent.atomic.AtomicInteger(0));
+                totalJogadoresEvento.put(codigoSala, totalAtivos);
+
+                System.out.println("=== CONTADOR RESETADO === Total jogadores: " + totalAtivos);
 
                 for (Jogador jogador : ativos) {
                     String username = jogador.getUsuario().getUsername();
@@ -590,6 +700,18 @@ public class JogoController {
 
                     mensageiro.convertAndSendToUser(username,
                             "/queue/estado-jogador-evento", estadoDecisaoEvento);
+                    // Envia para o canal pessoal do usuário
+                    mensageiro.convertAndSendToUser(
+                            username,
+                            "/queue/estado-jogador-evento",
+                            estadoDecisaoEvento
+                    );
+
+                    // Também envia pelo tópico individual como fallback
+                    mensageiro.convertAndSend(
+                            "/topic/evento/" + codigoSala + "/" + username,
+                            estadoDecisaoEvento
+                    );
                 }
                 
                 // Tratamento especial para LIDERANÇA
@@ -685,5 +807,16 @@ public class JogoController {
         public String nomeEvento;
         public String emoji;
         public String mensagem;
+    }
+
+    static class MensagemConclusaoEvento {
+        public String tipo = "DECISAO";
+        public String fase = "DECISAO";
+        public String mensagem;
+    }
+
+    static class MensagemTraicaoAdivinhar {
+        public String fase = "TRAICAO_ADIVINHAR";
+        public String descricao;
     }
 }
