@@ -167,9 +167,9 @@ function mostrarAguardoEvento(evento) {
     mostrarCronometro(45);
     let segundos = 45;
 
-    intervaloEventoAntes = setInterval(() => {
-        segundos--;
-        const val = document.getElementById('cronometro-valor');
+    intervaloEventoAntes = setInterval(async () => {
+    segundos--;
+    const val = document.getElementById('cronometro-valor');
         if (val) {
             val.textContent = segundos;
             val.style.color = '#0f1923';
@@ -179,16 +179,31 @@ function mostrarAguardoEvento(evento) {
                 else if (segundos <= 20) container.style.background = 'var(--destaque)';
             }
         }
+
         if (segundos <= 0) {
             clearInterval(intervaloEventoAntes);
             intervaloEventoAntes = null;
             esconderCronometro();
-            // Quando o tempo acaba, remove o painel e mostra decisão
+
+            // Remove painel do evento
             const p = document.getElementById('painel-evento-antes');
             if (p) p.remove();
-            eventoAntesConcluido = true;
-            if (estadoAtual && !jaConfirmouDecisao) {
-                mostrarFaseDecisao(estadoAtual);
+
+            // Notifica servidor que o tempo esgotou
+            // Apenas 1 jogador precisa enviar — o servidor libera para todos
+            try {
+                await fetch('/jogo/evento/tempo-esgotado', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codigoSala })
+                });
+            } catch(e) {
+                // Fallback local
+                eventoAntesConcluido = true;
+                eventoPendente = false;
+                if (estadoAtual && !jaConfirmouDecisao) {
+                    mostrarFaseDecisao(estadoAtual);
+                }
             }
         }
     }, 1000);
@@ -280,9 +295,11 @@ function tratarMensagemSala(dados) {
         case 'EM_JOGO':
             estadoAtual = dados;
 
-            // Remove TODOS os painéis de evento
-            const painelAntesD = document.getElementById('painel-evento-antes');
-            if (painelAntesD) painelAntesD.remove();
+            // Só remove painel de evento se todos concluíram
+            if (eventoAntesConcluido) {
+                const painelAntesD = document.getElementById('painel-evento-antes');
+                if (painelAntesD) painelAntesD.remove();
+            }
 
             const painelDiscD = document.getElementById('painel-discussao');
             if (painelDiscD) painelDiscD.remove();
@@ -292,7 +309,6 @@ function tratarMensagemSala(dados) {
                 intervaloDiscussao = null;
             }
 
-            // Para cronômetro de evento se estiver rodando
             if (intervaloEventoAntes) {
                 clearInterval(intervaloEventoAntes);
                 intervaloEventoAntes = null;
@@ -302,7 +318,6 @@ function tratarMensagemSala(dados) {
             atualizarMesa(dados);
             atualizarInfoRodada(dados);
 
-            // Marca evento como concluído
             eventoAntesConcluido = true;
             eventoPendente = false;
 
@@ -438,40 +453,41 @@ async function sinalizarEventoConcluido() {
     esconderCronometro();
     window._alvoEventoSelecionado = null;
 
-    // Remove painel do evento
-    setTimeout(() => {
-        const p = document.getElementById('painel-evento-antes');
-        if (p) p.remove();
-    }, 500);
-
-    // Notifica servidor que este jogador concluiu
     try {
         const tipoEvento = eventoAtual ? eventoAtual.tipo : 'DESCONHECIDO';
         const resp = await fetch('/jogo/evento/concluir', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                codigoSala,
-                tipo: tipoEvento
-            })
+            body: JSON.stringify({ codigoSala, tipo: tipoEvento })
         });
 
         if (resp.ok) {
             const dados = await resp.json();
-            console.log('Evento concluído:', dados.concluidos +
-                '/' + dados.total);
+            console.log('Concluído:', dados.concluidos + '/' + dados.total);
 
-            // Só mostra decisão quando TODOS concluíram
-            // (o servidor envia DECISAO via WebSocket)
+            // Mostra aguardo se ainda há jogadores decidindo
+            if (dados.concluidos < dados.total) {
+                const painel = document.getElementById('painel-evento-antes');
+                if (painel) {
+                    painel.innerHTML = `
+                        <div class="decisao-card" style="text-align:center;">
+                            <div style="font-size:2rem;margin-bottom:12px;">✅</div>
+                            <h3 style="color:var(--sucesso);">Decisão registrada!</h3>
+                            <p style="color:var(--texto-fraco);margin-top:8px;">
+                                Aguardando outros jogadores...
+                                (${dados.concluidos}/${dados.total})
+                            </p>
+                        </div>
+                    `;
+                }
+                // NÃO libera decisão — aguarda servidor enviar DECISAO
+                // quando todos concluírem
+                return;
+            }
+            // Se todos concluíram, servidor já envia DECISAO via WebSocket
         }
     } catch(e) {
-        console.error('Erro ao concluir evento:', e);
-        // Fallback — mostra decisão localmente
-        eventoAntesConcluido = true;
-        eventoPendente = false;
-        if (estadoAtual && !jaConfirmouDecisao) {
-            mostrarFaseDecisao(estadoAtual);
-        }
+        console.error('Erro:', e);
     }
 
     if (resolverEventoPendente) {
@@ -1590,23 +1606,22 @@ function mostrarInterfaceEventoAntes(evento) {
 }
 
 async function executarAcaoPadrao(evento) {
-    // Ação padrão quando o tempo esgota
     const mensagens = {
         ROUBO: '💰 O ladrão não escolheu ninguém.',
         VENENO: '🧪 O Feiticeiro não escolheu nenhuma vítima.',
-        PARCEIROS: '🤝 Tempo esgotado! Nenhuma ação dos parceiros.',
+        PARCEIROS: '🤝 Tempo esgotado!',
         ROLETA: '🎰 Tempo esgotado! Sem giros.',
         EXPOSICAO: '🔍 O Expositor não espiou ninguém.',
         OSMOSE: '🧂 Nenhum duelo foi iniciado.',
         TRAICAO: '🔪 O Traidor não escolheu ninguém.',
         BOMBA_RELOGIO: '💣 A bomba explodiu!',
         IGUALDADE: '🟰 Votação encerrada por tempo.',
-        DUPLICATA: '✌️ Tempo esgotado! Nenhuma duplicata.'
+        DUPLICATA: '✌️ Tempo esgotado!'
     };
 
     const msg = mensagens[evento.tipo] || 'Tempo esgotado!';
+    mostrarMensagemFlutuante('⏰ ' + msg);
 
-    // Envia ação de recusar/pular para o servidor
     const acoesRecusar = {
         ROUBO: 'RECUSAR', VENENO: 'PULAR', PARCEIROS: 'PULAR',
         ROLETA: 'PARAR', EXPOSICAO: 'RECUSAR', OSMOSE: 'RECUSAR',
@@ -1619,19 +1634,7 @@ async function executarAcaoPadrao(evento) {
         await enviarAcaoEvento({ tipo: evento.tipo, acao });
     }
 
-    // Atualiza o painel
-    const conteudo = document.getElementById('conteudo-evento-antes');
-    if (conteudo) {
-        conteudo.innerHTML = `
-            <div style="text-align:center; padding:16px;">
-                <div style="font-size:2rem; margin-bottom:8px;">⏰</div>
-                <p style="color:var(--texto-fraco);">${msg}</p>
-            </div>
-        `;
-    }
-
-    mostrarMensagemFlutuante('⏰ ' + msg);
-    sinalizarEventoConcluido();
+    await sinalizarEventoConcluido();
 }
 
 function seletorJogadores(excluirEuMesmo = true) {

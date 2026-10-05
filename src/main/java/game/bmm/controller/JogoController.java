@@ -146,9 +146,8 @@ public class JogoController {
             try {
                 String codigoSala = (String) body.get("codigoSala");
 
-                // Verifica se contador existe
                 if (!contadorEventoConcluido.containsKey(codigoSala)) {
-                    System.out.println("AVISO: Contador não encontrado para sala " + codigoSala);
+                    System.out.println("AVISO: Contador não encontrado para " + codigoSala);
                     return ResponseEntity.ok(Map.of("concluidos", 0, "total", 0));
                 }
 
@@ -156,33 +155,51 @@ public class JogoController {
                 int concluidos = contadorEventoConcluido.get(codigoSala).incrementAndGet();
 
                 System.out.println("=== CONCLUIR EVENTO === " +
-                        auth.getName() + " concluiu. " +
-                        concluidos + "/" + total);
+                        auth.getName() + " concluiu. " + concluidos + "/" + total);
 
+                // SÓ envia DECISAO quando TODOS concluírem
                 if (concluidos >= total) {
                     contadorEventoConcluido.remove(codigoSala);
                     totalJogadoresEvento.remove(codigoSala);
-
-                    new Thread(() -> {
-                        try {
-                            Thread.sleep(500);
-                            EstadoSala estadoDecisao =
-                                    jogoService.montarEstadoSala(codigoSala);
-                            estadoDecisao.setFase("DECISAO");
-                            estadoDecisao.setMensagem("Faça sua escolha!");
-                            mensageiro.convertAndSend(
-                                    "/topic/sala/" + codigoSala, estadoDecisao);
-                            System.out.println("=== TODOS CONCLUÍRAM — ENVIANDO DECISAO ===");
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }).start();
+                    liberarDecisao(codigoSala);
                 }
 
                 return ResponseEntity.ok(Map.of("concluidos", concluidos, "total", total));
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
             }
+        }
+
+        // Endpoint para liberar decisão quando cronômetro acaba no frontend
+        @PostMapping("/evento/tempo-esgotado")
+        public ResponseEntity<?> tempoEsgotado(@RequestBody Map<String, Object> body) {
+            try {
+                String codigoSala = (String) body.get("codigoSala");
+                System.out.println("=== TEMPO ESGOTADO === Sala: " + codigoSala);
+                contadorEventoConcluido.remove(codigoSala);
+                totalJogadoresEvento.remove(codigoSala);
+                liberarDecisao(codigoSala);
+                return ResponseEntity.ok("Decisão liberada por tempo!");
+            } catch (RuntimeException e) {
+                return ResponseEntity.badRequest().body(e.getMessage());
+            }
+        }
+
+        private void liberarDecisao(String codigoSala) {
+            new Thread(() -> {
+                try {
+                    Thread.sleep(500);
+                    EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
+                    estadoDecisao.setFase("DECISAO");
+                    estadoDecisao.setMensagem("Faça sua escolha!");
+                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDecisao);
+                    System.out.println("=== DECISAO LIBERADA PARA TODOS ===");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    System.err.println("Erro ao liberar decisão: " + e.getMessage());
+                }
+            }).start();
         }
 
         private ResponseEntity<?> processarPassagemBomba(String codigoSala,
@@ -466,7 +483,7 @@ public class JogoController {
                         }
 
                         mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgEv);
-                        Thread.sleep(5000);
+                        Thread.sleep(4000);
                     }
                 }
 
@@ -515,7 +532,7 @@ public class JogoController {
                         }
 
                         mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgVeneno);
-                        Thread.sleep(5000);
+                        Thread.sleep(4000);
                     }
                 }
 
@@ -532,7 +549,7 @@ public class JogoController {
                                 tributo.getDescartado() + " descartadas.");
                 mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoRevelacao);
 
-                Thread.sleep(5000);
+                Thread.sleep(4500);
 
                 boolean continua = jogoService.avancarRodada(codigoSala);
                 System.out.println("Continua: " + continua);
@@ -574,6 +591,8 @@ public class JogoController {
     // FASE DE DISCUSSÃO
     // =============================================
     private void iniciarFaseDiscussao(String codigoSala) throws InterruptedException {
+        Thread.sleep(1000);
+
         Sala sala = salaRepository.findByCodigo(codigoSala)
                 .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
 
