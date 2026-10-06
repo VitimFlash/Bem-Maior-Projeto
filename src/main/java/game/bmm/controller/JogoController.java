@@ -35,6 +35,8 @@ public class JogoController {
             contadorEventoConcluido = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, Integer> totalJogadoresEvento =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Map<String, String>> escolhasParceiros =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     // =============================================
     // REST ENDPOINTS
@@ -42,6 +44,14 @@ public class JogoController {
     @RestController
     @RequestMapping("/jogo")
     class JogoRestController {
+
+        static class MensagemResultadoEvento {
+            public String tipo = "RESULTADO_EVENTO";
+            public String nomeEvento;
+            public String emoji;
+            public String mensagem;
+            public String corBorda; // ← novo campo
+        }
 
         @PostMapping("/iniciar-rodada")
         public ResponseEntity<?> iniciarRodada(@RequestBody Map<String, String> body) {
@@ -131,11 +141,93 @@ public class JogoController {
                     return ResponseEntity.ok(resultado);
                 }
 
+                if ("PARCEIROS".equals(tipo)) {
+                    // Armazena escolha do jogador
+                    escolhasParceiros.computeIfAbsent(codigoSala,
+                                    k -> new java.util.concurrent.ConcurrentHashMap<>())
+                            .put(username, acao);
 
+                    Map<String, String> escolhas = escolhasParceiros.get(codigoSala);
+                    System.out.println("=== PARCEIROS === Escolhas: " + escolhas);
 
+                    // Quando ambos escolherem, processa e mostra resultado
+                    if (escolhas.size() >= 2) {
+                        escolhasParceiros.remove(codigoSala);
+                        processarResultadoParceiros(codigoSala, escolhas);
+                    }
+                }
                 return ResponseEntity.ok(resultado);
             } catch (RuntimeException e) {
                 return ResponseEntity.badRequest().body(e.getMessage());
+            }
+        }
+
+        private void processarResultadoParceiros(String codigoSala,
+                                                 Map<String, String> escolhas) {
+            try {
+                Sala sala = salaRepository.findByCodigo(codigoSala)
+                        .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
+
+                List<String> jogadores = new java.util.ArrayList<>(escolhas.keySet());
+                long traidores = escolhas.values().stream()
+                        .filter("ENGANAR"::equals).count();
+
+                System.out.println("=== RESULTADO PARCEIROS === Traidores: " + traidores);
+
+                // Aplica efeito
+                for (Map.Entry<String, String> entry : escolhas.entrySet()) {
+                    String nome = entry.getKey();
+                    String escolha = entry.getValue();
+                    String nomeOponente = jogadores.stream()
+                            .filter(j -> !j.equals(nome)).findFirst().orElse(null);
+                    String escolhaOponente = nomeOponente != null
+                            ? escolhas.get(nomeOponente) : null;
+
+                    jogadorRepository.findBySala(sala).stream()
+                            .filter(j -> j.getUsuario().getUsername().equals(nome))
+                            .findFirst().ifPresent(jogador -> {
+                                if ("COMPARTILHAR".equals(escolha) &&
+                                        "COMPARTILHAR".equals(escolhaOponente)) {
+                                    // Ambos compartilham → ×1.5
+                                    jogador.setBemPessoal(
+                                            (int)(jogador.getBemPessoal() * 1.5));
+                                } else if ("ENGANAR".equals(escolha) &&
+                                        "COMPARTILHAR".equals(escolhaOponente)) {
+                                    // Só este enganou → ×2
+                                    jogador.setBemPessoal(jogador.getBemPessoal() * 2);
+                                }
+                                // Ambos enganam → nada acontece
+                                jogadorRepository.save(jogador);
+                            });
+                }
+
+                // Monta mensagem de feedback
+                MensagemResultadoEvento msgParceiros = new MensagemResultadoEvento();
+                msgParceiros.nomeEvento = "PARCEIROS";
+                msgParceiros.emoji = "🤝";
+
+                if (traidores == 0) {
+                    msgParceiros.mensagem = "🤝 Ambos compartilharam! " +
+                            "Bem-pessoal de todos aumentou ×1.5!";
+                    msgParceiros.corBorda = "#1a7a4a"; // verde escuro
+                } else if (traidores == 1) {
+                    String traidor = escolhas.entrySet().stream()
+                            .filter(e -> "ENGANAR".equals(e.getValue()))
+                            .map(Map.Entry::getKey).findFirst().orElse("?");
+                    msgParceiros.mensagem = "😈 " + traidor +
+                            " enganou o parceiro! Bem-pessoal de " +
+                            traidor + " dobrou!";
+                    msgParceiros.corBorda = "#e67e22"; // laranja
+                } else {
+                    msgParceiros.mensagem = "💔 Ambos se enganaram! " +
+                            "Nada aconteceu.";
+                    msgParceiros.corBorda = "#e74c3c"; // vermelho
+                }
+
+                mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgParceiros);
+
+            } catch (Exception e) {
+                System.err.println("Erro ao processar parceiros: " + e.getMessage());
             }
         }
 
@@ -692,7 +784,6 @@ public class JogoController {
 
                 // Aguarda 8 segundos de animação
                 Thread.sleep(8000);
-                Thread.sleep(2000);
 
                 Sala salaAtual = salaRepository.findByCodigo(codigoSala)
                         .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
@@ -788,6 +879,25 @@ public class JogoController {
                     }
                     // Aguarda 45 segundos para decisão do evento
                     Thread.sleep(45000);
+                }
+                if (eventoSorteado != null &&
+                        jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo())) {
+
+                    // Reseta contador
+                    contadorEventoConcluido.put(codigoSala,
+                            new java.util.concurrent.atomic.AtomicInteger(0));
+                    totalJogadoresEvento.put(codigoSala, ativos.size());
+
+                    for (Jogador jogador : ativos) {
+                        // ... envio individual
+                    }
+                } else {
+                    // Sem evento — libera decisão diretamente
+                    EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
+                    estadoDecisao.setFase("DECISAO");
+                    estadoDecisao.setMensagem("Rodada " + sala.getRodadaAtual() +
+                            " iniciada! Faça sua escolha.");
+                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDecisao);
                 }
             }
         }

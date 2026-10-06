@@ -86,7 +86,12 @@ function processarEventoPersonalizado(dados) {
     }
 
     if (dados.fase === 'DECISAO_EVENTO_ANTES' && dados.eventoAtualInfo) {
-        console.log('Recebeu DECISAO_EVENTO_ANTES!');
+        // Verifica se realmente há um evento com decisão
+        if (!dados.eventoAtualInfo.tipo) {
+            console.log('Evento sem tipo — ignorando');
+            return;
+        }
+
         eventoAntesConcluido = false;
         eventoPendente = true;
 
@@ -101,8 +106,6 @@ function processarEventoPersonalizado(dados) {
             dados.eventoAtualInfo.souExpositor ||
             dados.eventoAtualInfo.souTraidor ||
             dados.eventoAtualInfo.souPortador;
-
-        console.log('Tem cargo:', temCargo, dados.eventoAtualInfo);
 
         document.getElementById('painel-decisao').classList.add('escondido');
 
@@ -120,25 +123,25 @@ function processarEventoPersonalizado(dados) {
     }
 
     if (dados.fase === 'TRAICAO_ADIVINHAR') {
-    setTimeout(() => {
-        const painel = document.getElementById('painel-evento-extra');
-        if (painel) {
-            painel.classList.remove('escondido');
-            painel.innerHTML = `
-                <div class="evento-interface">
-                    <p>🔪 Você foi <strong>traído</strong>!
-                       Tente adivinhar quem foi o traidor:</p>
-                    ${seletorJogadores()}
-                    <button class="btn-evento-acao"
-                        onclick="adivinharTraidor()">
-                        🔍 Acusar
-                    </button>
-                </div>
-            `;
-        }
-    }, 500);
-    return;
-}
+        setTimeout(() => {
+            const painel = document.getElementById('painel-evento-extra');
+            if (painel) {
+                painel.classList.remove('escondido');
+                painel.innerHTML = `
+                    <div class="evento-interface">
+                        <p>🔪 Você foi <strong>traído</strong>!
+                           Tente adivinhar quem foi o traidor:</p>
+                        ${seletorJogadores()}
+                        <button class="btn-evento-acao"
+                            onclick="adivinharTraidor()">
+                            🔍 Acusar
+                        </button>
+                    </div>
+                `;
+            }
+        }, 500);
+        return;
+    }
 }
 
 function mostrarAguardoEvento(evento) {
@@ -880,17 +883,30 @@ function mostrarResultadoEvento(dados) {
     const overlayAnterior = document.getElementById('overlay-resultado-evento');
     if (overlayAnterior) overlayAnterior.remove();
 
-    const isPositivo = dados.nomeEvento === 'BOLHA' ||
-        (dados.nomeEvento === 'VENENO' && dados.mensagem.includes('não foi'));
-    const isNegativo = dados.nomeEvento === 'FOGUEIRA' ||
-        (dados.nomeEvento === 'VENENO' && dados.mensagem.includes('foi ativado'));
+    // Cor dinâmica — usa corBorda do servidor se disponível
+    let corBorda = dados.corBorda || 'var(--destaque)';
+    let corFundo = dados.corBorda
+        ? dados.corBorda + '26' // adiciona transparência
+        : 'rgba(240,192,64,0.1)';
 
-    const corBorda = isPositivo
-        ? '#1a7a4a'  // verde escuro
-        : isNegativo ? 'var(--perigo)' : 'var(--destaque)';
-    const corFundo = isPositivo
-        ? 'rgba(26,122,74,0.15)'
-        : isNegativo ? 'rgba(231,76,60,0.15)' : 'rgba(240,192,64,0.1)';
+    // Cores padrão por evento se não tiver corBorda
+    if (!dados.corBorda) {
+        if (dados.nomeEvento === 'BOLHA') {
+            corBorda = '#1a7a4a';
+            corFundo = 'rgba(26,122,74,0.15)';
+        } else if (dados.nomeEvento === 'FOGUEIRA') {
+            corBorda = 'var(--perigo)';
+            corFundo = 'rgba(231,76,60,0.15)';
+        } else if (dados.nomeEvento === 'VENENO') {
+            if (dados.mensagem.includes('não foi')) {
+                corBorda = '#1a7a4a';
+                corFundo = 'rgba(26,122,74,0.15)';
+            } else {
+                corBorda = 'var(--perigo)';
+                corFundo = 'rgba(231,76,60,0.15)';
+            }
+        }
+    }
 
     const overlay = document.createElement('div');
     overlay.id = 'overlay-resultado-evento';
@@ -906,21 +922,21 @@ function mostrarResultadoEvento(dados) {
             padding: 48px; max-width: 500px; width: 90%;
             text-align: center; border: 2px solid ${corBorda};
             box-shadow: 0 0 40px ${corBorda}40;">
-            <div style="font-size: 5rem; margin-bottom: 16px;">
+            <div style="font-size:5rem;margin-bottom:16px;">
                 ${dados.emoji || '⚡'}
             </div>
-            <h2 style="color: ${corBorda}; margin-bottom: 16px; font-size: 1.5rem;">
+            <h2 style="color:${corBorda};margin-bottom:16px;font-size:1.5rem;">
                 Resultado do Evento
             </h2>
-            <p style="font-size: 1.1rem; color: var(--texto); line-height: 1.6;
-                margin-bottom: 20px;">
+            <p style="font-size:1.1rem;color:var(--texto);
+                line-height:1.6;margin-bottom:20px;">
                 ${dados.mensagem}
             </p>
             <div style="background:rgba(255,255,255,0.1);
                 border-radius:4px;height:4px;overflow:hidden;">
-                <div id="barra-resultado-evento" style="height:100%;
-                    background:${corBorda};width:100%;
-                    transition:width 0.1s linear;"></div>
+                <div id="barra-resultado-evento"
+                    style="height:100%;background:${corBorda};
+                    width:100%;transition:width 0.1s linear;"></div>
             </div>
         </div>
     `;

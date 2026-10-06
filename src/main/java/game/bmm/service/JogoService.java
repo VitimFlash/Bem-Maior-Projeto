@@ -369,6 +369,8 @@ public class JogoService {
             case "PARCEIROS" -> {
                 resultado.put("escolha", acao);
                 resultado.put("mensagem", "Escolha registrada!");
+                resultado.put("notificarSala", false);
+                resultado.put("precisaProcessar", true);
             }
             case "LIDERANCA" -> {
                 if ("VOTAR".equals(acao) && alvoUsername != null) {
