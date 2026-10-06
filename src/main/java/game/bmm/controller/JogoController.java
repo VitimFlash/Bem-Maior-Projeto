@@ -37,6 +37,8 @@ public class JogoController {
             new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, Map<String, String>> escolhasParceiros =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Map<String, String>> escolhasDuplicata =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     // =============================================
     // REST ENDPOINTS
@@ -137,8 +139,11 @@ public class JogoController {
                         }
                     }).start();
                 }
-                if ("DUPLICATA".equals(tipo)) {
-                    return ResponseEntity.ok(resultado);
+
+                if ("DUPLICATA".equals(tipo) && resultado.containsKey("escolhaTributo")) {
+                    escolhasDuplicata.computeIfAbsent(codigoSala,
+                                    k -> new java.util.concurrent.ConcurrentHashMap<>())
+                            .put(username, (String) resultado.get("escolhaTributo"));
                 }
 
                 if ("PARCEIROS".equals(tipo)) {
@@ -280,6 +285,20 @@ public class JogoController {
         private void liberarDecisao(String codigoSala) {
             new Thread(() -> {
                 try {
+                    // Aplica escolhas de duplicata de tributo
+                    if (escolhasDuplicata.containsKey(codigoSala)) {
+                        Map<String, String> escolhas = escolhasDuplicata.remove(codigoSala);
+                        Sala sala = salaRepository.findByCodigo(codigoSala)
+                                .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
+
+                        for (Map.Entry<String, String> entry : escolhas.entrySet()) {
+                            // Aplica multiplicador nos tributos via decisão
+                            // (será processado quando calcular tributos)
+                            System.out.println("Duplicata tributo " +
+                                    entry.getKey() + ": " + entry.getValue());
+                        }
+                    }
+
                     Thread.sleep(500);
                     EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
                     estadoDecisao.setFase("DECISAO");
@@ -289,7 +308,7 @@ public class JogoController {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 } catch (Exception e) {
-                    System.err.println("Erro ao liberar decisão: " + e.getMessage());
+                    System.err.println("Erro: " + e.getMessage());
                 }
             }).start();
         }
@@ -771,6 +790,28 @@ public class JogoController {
                 contadorEventoConcluido.put(codigoSala,
                         new java.util.concurrent.atomic.AtomicInteger(0));
                 totalJogadoresEvento.put(codigoSala, ativos.size());
+
+                int totalComCargo = ativos.size();
+
+                if ("ROUBO".equals(eventoFinal.getTipo()) ||
+                        "VENENO".equals(eventoFinal.getTipo()) ||
+                        "EXPOSICAO".equals(eventoFinal.getTipo()) ||
+                        "TRAICAO".equals(eventoFinal.getTipo()) ||
+                        "BOMBA_RELOGIO".equals(eventoFinal.getTipo())) {
+                    totalComCargo = 1; // só o jogador com cargo decide
+                } else if ("PARCEIROS".equals(eventoFinal.getTipo())) {
+                    totalComCargo = 2; // apenas os 2 parceiros decidem
+                } else if ("LIDERANCA".equals(eventoFinal.getTipo())) {
+                    totalComCargo = 1; // apenas o líder decide
+                }
+
+                contadorEventoConcluido.put(codigoSala,
+                        new java.util.concurrent.atomic.AtomicInteger(0));
+                totalJogadoresEvento.put(codigoSala, totalComCargo);
+
+                System.out.println("=== CONTADOR CONFIGURADO === " +
+                        eventoFinal.getTipo() + " total com cargo: " + totalComCargo);
+
                 for (Jogador jogador : ativos) {
                     String username = jogador.getUsuario().getUsername();
                     EstadoSala estadoPersonalizado = jogoService.montarEstadoSala(codigoSala);

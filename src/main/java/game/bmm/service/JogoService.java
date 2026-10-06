@@ -411,15 +411,16 @@ public class JogoService {
                     resultado.put("bemAntes", bemAtual);
                     resultado.put("bemDepois", novoValor);
                     resultado.put("mensagem", dobrou
-                            ? "✅ Sorte! Seu bem-pessoal dobrou: " + bemAtual + " → " + novoValor
-                            : "❌ Azar! Seu bem-pessoal foi dividido: " + bemAtual + " → " + novoValor);
+                            ? "✅ Sorte! Bem-pessoal: " + bemAtual + " → " + novoValor
+                            : "❌ Azar! Bem-pessoal: " + bemAtual + " → " + novoValor);
                 } else if ("TRIBUTO".equals(acao)) {
-                    // Será aplicado na fase de decisão — apenas retorna o resultado
+                    // Armazena para aplicar depois
                     boolean dobrou = new java.util.Random().nextBoolean();
                     resultado.put("dobrou", dobrou);
+                    resultado.put("escolhaTributo", dobrou ? "DOBRAR" : "DIVIDIR");
                     resultado.put("mensagem", dobrou
-                            ? "✅ Sorte! Seus tributos serão dobrados!"
-                            : "❌ Azar! Seus tributos serão divididos por 2!");
+                            ? "✅ Seus tributos serão dobrados!"
+                            : "❌ Seus tributos serão divididos por 2!");
                 } else if ("NENHUM".equals(acao)) {
                     resultado.put("mensagem", "Você optou por não duplicar nada.");
                 }

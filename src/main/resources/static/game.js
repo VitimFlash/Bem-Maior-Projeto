@@ -158,21 +158,22 @@ function mostrarAguardoEvento(evento) {
     painel.className = 'painel-decisao';
     painel.innerHTML = `
         <div class="decisao-card" style="text-align:center;">
-            <div style="font-size:2rem; margin-bottom:12px;">⏳</div>
-            <h3 style="color:var(--texto-fraco); font-size:1rem;">
+            <div style="font-size:2rem;margin-bottom:12px;">⏳</div>
+            <h3 style="color:var(--texto-fraco);font-size:1rem;">
                 ${obterMensagemAguardo(evento.tipo)}
             </h3>
         </div>
     `;
     document.body.appendChild(painel);
 
-    // Mostra cronômetro igual ao do jogador com cargo
+    // Mostra cronômetro mas NÃO chama sinalizarEventoConcluido
+    // quando acabar — apenas remove o painel e aguarda DECISAO do servidor
     mostrarCronometro(45);
     let segundos = 45;
 
-    intervaloEventoAntes = setInterval(async () => {
-    segundos--;
-    const val = document.getElementById('cronometro-valor');
+    intervaloEventoAntes = setInterval(() => {
+        segundos--;
+        const val = document.getElementById('cronometro-valor');
         if (val) {
             val.textContent = segundos;
             val.style.color = '#0f1923';
@@ -187,27 +188,8 @@ function mostrarAguardoEvento(evento) {
             clearInterval(intervaloEventoAntes);
             intervaloEventoAntes = null;
             esconderCronometro();
-
-            // Remove painel do evento
             const p = document.getElementById('painel-evento-antes');
             if (p) p.remove();
-
-            // Notifica servidor que o tempo esgotou
-            // Apenas 1 jogador precisa enviar — o servidor libera para todos
-            try {
-                await fetch('/jogo/evento/tempo-esgotado', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ codigoSala })
-                });
-            } catch(e) {
-                // Fallback local
-                eventoAntesConcluido = true;
-                eventoPendente = false;
-                if (estadoAtual && !jaConfirmouDecisao) {
-                    mostrarFaseDecisao(estadoAtual);
-                }
-            }
         }
     }, 1000);
 }
@@ -1764,9 +1746,19 @@ function mostrarInterfaceParceiros(evento, painel) {
 
 async function escolherParceiro(acao) {
     await enviarAcaoEvento({ tipo: 'PARCEIROS', acao });
+
     const painel = obterPainelEvento();
-    if (painel) painel.innerHTML = `<p class="evento-info-neutro">✅ Você escolheu: ${acao}</p>`;
-    sinalizarEventoConcluido();
+    if (painel) painel.innerHTML = `
+        <div style="text-align:center;padding:16px;">
+            <div style="font-size:2rem;margin-bottom:8px;">✅</div>
+            <p style="color:var(--sucesso);">Você escolheu: ${acao}</p>
+            <p style="color:var(--texto-fraco);margin-top:8px;font-size:0.85rem;">
+                Aguardando o outro parceiro...
+            </p>
+        </div>
+    `;
+
+    await sinalizarEventoConcluido();
 }
 
 function mostrarInterfaceRoleta(evento, painel) {
@@ -1898,25 +1890,56 @@ function mostrarInterfaceExposicao(evento, painel) {
 
 async function confirmarExposicao() {
     const alvo = obterAlvoSelecionado();
-    window._alvoEventoSelecionado = null; // limpa após usar
+    window._alvoEventoSelecionado = null;
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
-    const resp = await enviarAcaoEvento({ tipo: 'EXPOSICAO', acao: 'ESPIAR', alvo });
+
+    const resp = await enviarAcaoEvento({
+        tipo: 'EXPOSICAO', acao: 'ESPIAR', alvo
+    });
+
     const painel = obterPainelEvento();
-    if (painel && resp?.bemPessoal !== undefined) {
-        painel.innerHTML = `
-            <p style="color:var(--destaque); text-align:center;">
-                💼 ${alvo} tem <strong>${resp.bemPessoal} moedas</strong> no bem-pessoal!
-            </p>`;
+    if (painel) {
+        if (resp?.bemPessoal !== undefined) {
+            painel.innerHTML = `
+                <div style="text-align:center;padding:20px;">
+                    <div style="font-size:2.5rem;margin-bottom:12px;">🔍</div>
+                    <p style="color:var(--destaque);font-size:1.1rem;
+                        font-weight:bold;">
+                        Informação secreta!
+                    </p>
+                    <div style="background:rgba(240,192,64,0.1);
+                        border:1px solid var(--destaque);border-radius:10px;
+                        padding:16px;margin-top:12px;">
+                        <p style="color:var(--texto);">
+                            💼 <strong>${alvo}</strong> tem
+                        </p>
+                        <p style="font-size:2rem;font-weight:bold;
+                            color:var(--destaque);margin-top:4px;">
+                            ${resp.bemPessoal} 🪙
+                        </p>
+                        <p style="color:var(--texto-fraco);font-size:0.8rem;">
+                            no bem-pessoal
+                        </p>
+                    </div>
+                </div>
+            `;
+        } else {
+            painel.innerHTML =
+                '<p class="evento-info-neutro">🔍 Espionagem realizada!</p>';
+        }
     }
-    sinalizarEventoConcluido();
+
+    await sinalizarEventoConcluido();
 }
 
 async function recusarExposicao() {
     await enviarAcaoEvento({ tipo: 'EXPOSICAO', acao: 'RECUSAR' });
     const painel = obterPainelEvento();
-    if (painel) painel.innerHTML = '<p class="evento-info-neutro">✅ Você optou por não espiar.</p>';
-    sinalizarEventoConcluido();
+    if (painel) painel.innerHTML =
+        '<p class="evento-info-neutro">✅ Você optou por não espiar.</p>';
+    await sinalizarEventoConcluido();
 }
+
 function mostrarInterfaceLideranca(evento, painel) {
     if (!evento.souExecutor) {
         painel.innerHTML = `<p class="evento-info-neutro">
