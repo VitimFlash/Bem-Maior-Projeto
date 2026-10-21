@@ -39,6 +39,8 @@ public class JogoController {
             new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, Map<String, String>> escolhasDuplicata =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, String> traidoresPorSala =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     // =============================================
     // REST ENDPOINTS
@@ -119,25 +121,27 @@ public class JogoController {
                 }
                 if ("TRAICAO".equals(tipo) && "TRAIR".equals(acao) &&
                         resultado.containsKey("traido")) {
-
                     String vitima = (String) resultado.get("traido");
+                    traidoresPorSala.put(codigoSala, username); // armazena traidor
 
-                    // Envia interface de adivinhação para a vítima
-                    // durante a fase de decisão das moedas
                     new Thread(() -> {
                         try {
-                            Thread.sleep(1000);
+                            Thread.sleep(500);
                             MensagemTraicaoAdivinhar msgVitima = new MensagemTraicaoAdivinhar();
-                            msgVitima.descricao = "🔪 Você foi traído! Tente adivinhar quem foi durante a decisão.";
-                            mensageiro.convertAndSendToUser(vitima, "/queue/estado-jogador-evento", msgVitima);
-                            mensageiro.convertAndSend("/topic/evento/" + codigoSala + "/" + vitima, msgVitima);
-                            MensagemConclusaoEvento msgConclusao = new MensagemConclusaoEvento();
-                            msgConclusao.mensagem = "Faça sua escolha!";
-                            mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgConclusao);
+                            msgVitima.descricao =
+                                    "🔪 Você foi traído! Tente adivinhar quem foi o traidor.";
+                            mensageiro.convertAndSendToUser(vitima,
+                                    "/queue/estado-jogador-evento", msgVitima);
+                            mensageiro.convertAndSend(
+                                    "/topic/evento/" + codigoSala + "/" + vitima, msgVitima);
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                         }
                     }).start();
+                }
+                if ("TRAICAO".equals(tipo) && "ADIVINHAR".equals(acao)) {
+                    body.put("traidorReal",
+                            traidoresPorSala.getOrDefault(codigoSala, ""));
                 }
 
                 if ("DUPLICATA".equals(tipo) && resultado.containsKey("escolhaTributo")) {
@@ -791,26 +795,21 @@ public class JogoController {
                         new java.util.concurrent.atomic.AtomicInteger(0));
                 totalJogadoresEvento.put(codigoSala, ativos.size());
 
-                int totalComCargo = ativos.size();
-
-                if ("ROUBO".equals(eventoFinal.getTipo()) ||
-                        "VENENO".equals(eventoFinal.getTipo()) ||
-                        "EXPOSICAO".equals(eventoFinal.getTipo()) ||
-                        "TRAICAO".equals(eventoFinal.getTipo()) ||
-                        "BOMBA_RELOGIO".equals(eventoFinal.getTipo())) {
-                    totalComCargo = 1; // só o jogador com cargo decide
-                } else if ("PARCEIROS".equals(eventoFinal.getTipo())) {
-                    totalComCargo = 2; // apenas os 2 parceiros decidem
-                } else if ("LIDERANCA".equals(eventoFinal.getTipo())) {
-                    totalComCargo = 1; // apenas o líder decide
+                int totalComCargo;
+                switch (eventoFinal.getTipo()) {
+                    case "ROUBO", "VENENO", "EXPOSICAO",
+                         "TRAICAO", "BOMBA_RELOGIO" -> totalComCargo = 1;
+                    case "PARCEIROS", "LIDERANCA" -> totalComCargo = 2;
+                    default ->
+                            totalComCargo = ativos.size();
                 }
 
                 contadorEventoConcluido.put(codigoSala,
                         new java.util.concurrent.atomic.AtomicInteger(0));
                 totalJogadoresEvento.put(codigoSala, totalComCargo);
 
-                System.out.println("=== CONTADOR CONFIGURADO === " +
-                        eventoFinal.getTipo() + " total com cargo: " + totalComCargo);
+                System.out.println("=== CONTADOR === " + eventoFinal.getTipo() +
+                        " total com cargo: " + totalComCargo);
 
                 for (Jogador jogador : ativos) {
                     String username = jogador.getUsuario().getUsername();

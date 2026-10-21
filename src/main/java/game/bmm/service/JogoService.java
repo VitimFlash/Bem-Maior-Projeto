@@ -452,23 +452,32 @@ public class JogoService {
             }
             case "TRAICAO" -> {
                 if ("TRAIR".equals(acao) && alvo != null) {
-                    // Penaliza a vítima
                     alvo.setBemPessoal(alvo.getBemPessoal() - 3);
                     jogadorRepository.save(alvo);
                     resultado.put("traido", alvo.getUsuario().getUsername());
                     resultado.put("notificarSala", true);
                     resultado.put("mensagemSala", "🔪 A traição foi executada!");
                 } else if ("ADIVINHAR".equals(acao) && alvo != null) {
-                    // Verifica se acertou — comparar com traidor real
-                    // Por simplicidade usa Random por ora
-                    boolean acertou = new java.util.Random().nextBoolean();
+                    // Busca traidor real do mapa (passado como dadosExtras)
+                    String traidorReal = dadosExtras != null
+                            ? (String) dadosExtras.getOrDefault("traidorReal", "") : "";
+                    boolean acertou = alvo.getUsuario().getUsername().equals(traidorReal);
+
                     if (acertou) {
+                        // Vítima acertou — traidor perde 3
+                        Jogador traidorJogador = buscarJogador(traidorReal, sala);
+                        traidorJogador.setBemPessoal(traidorJogador.getBemPessoal() - 3);
+                        jogadorRepository.save(traidorJogador);
+                        // Devolve 3 moedas para a vítima
                         executor.setBemPessoal(executor.getBemPessoal() + 3);
+                        jogadorRepository.save(executor);
                     } else {
+                        // Vítima errou — perde mais 3
                         executor.setBemPessoal(executor.getBemPessoal() - 3);
+                        jogadorRepository.save(executor);
                     }
-                    jogadorRepository.save(executor);
                     resultado.put("acertou", acertou);
+                    resultado.put("traidorReal", traidorReal);
                 }
             }
             case "COPIA" -> {

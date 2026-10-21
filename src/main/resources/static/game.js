@@ -166,8 +166,6 @@ function mostrarAguardoEvento(evento) {
     `;
     document.body.appendChild(painel);
 
-    // Mostra cronômetro mas NÃO chama sinalizarEventoConcluido
-    // quando acabar — apenas remove o painel e aguarda DECISAO do servidor
     mostrarCronometro(45);
     let segundos = 45;
 
@@ -183,7 +181,6 @@ function mostrarAguardoEvento(evento) {
                 else if (segundos <= 20) container.style.background = 'var(--destaque)';
             }
         }
-
         if (segundos <= 0) {
             clearInterval(intervaloEventoAntes);
             intervaloEventoAntes = null;
@@ -769,24 +766,28 @@ function mostrarInterfaceDistribuicaoLider(dados) {
     const totalMoedasLider = jogadores.length * 5; // cada jogador tinha 5
 
     const linhasJogadores = jogadores.map(nome => `
-        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-            <span style="flex:1; color:var(--texto);">${nome}</span>
-            <div style="display:flex; align-items:center; gap:4px;">
-                <label style="font-size:0.8rem; color:var(--texto-fraco);">Tributo:</label>
-                <input type="number" id="tributo-${nome}" min="0" value="0"
-                    style="width:50px; padding:4px; background:rgba(255,255,255,0.1);
-                    border:1px solid rgba(255,255,255,0.2); border-radius:4px;
-                    color:var(--texto); text-align:center;"
-                    onchange="atualizarTotalLider()"/>
-                <label style="font-size:0.8rem; color:var(--texto-fraco);">Bem:</label>
-                <input type="number" id="bem-${nome}" min="0" value="0"
-                    style="width:50px; padding:4px; background:rgba(255,255,255,0.1);
-                    border:1px solid rgba(255,255,255,0.2); border-radius:4px;
-                    color:var(--texto); text-align:center;"
-                    onchange="atualizarTotalLider()"/>
-            </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="flex:1;color:var(--texto);">${nome}</span>
+        <div style="display:flex;align-items:center;gap:4px;">
+            <label style="font-size:0.8rem;color:var(--texto-fraco);">Tributo:</label>
+            <input type="number" id="tributo-${nome}"
+                min="0" max="${totalMoedasLider}" value="0"
+                style="width:50px;padding:4px;background:rgba(255,255,255,0.1);
+                border:1px solid rgba(255,255,255,0.2);border-radius:4px;
+                color:var(--texto);text-align:center;"
+                oninput="this.value=Math.max(0,parseInt(this.value)||0);
+                    atualizarTotalLider()"/>
+            <label style="font-size:0.8rem;color:var(--texto-fraco);">Bem:</label>
+            <input type="number" id="bem-${nome}"
+                min="0" max="${totalMoedasLider}" value="0"
+                style="width:50px;padding:4px;background:rgba(255,255,255,0.1);
+                border:1px solid rgba(255,255,255,0.2);border-radius:4px;
+                color:var(--texto);text-align:center;"
+                oninput="this.value=Math.max(0,parseInt(this.value)||0);
+                    atualizarTotalLider()"/>
         </div>
-    `).join('');
+    </div>
+`).join('');
 
     const painel = document.createElement('div');
     painel.id = 'painel-evento-antes';
@@ -816,14 +817,42 @@ function atualizarTotalLider() {
     const jogadores = window._jogadoresLider || [];
     let total = 0;
     jogadores.forEach(nome => {
-        total += parseInt(document.getElementById('tributo-' + nome)?.value || 0);
-        total += parseInt(document.getElementById('bem-' + nome)?.value || 0);
+        const tributo = parseInt(
+            document.getElementById('tributo-' + nome)?.value || 0);
+        const bem = parseInt(
+            document.getElementById('bem-' + nome)?.value || 0);
+        total += tributo + bem;
     });
+
+    const limite = window._totalMoedasLider || 20;
     const el = document.getElementById('distribuidas-lider');
     if (el) {
         el.textContent = total;
-        el.style.color = total === window._totalMoedasLider
-            ? 'var(--sucesso)' : 'var(--perigo)';
+        el.style.color = total === limite ? 'var(--sucesso)' :
+                         total > limite ? 'var(--perigo)' : 'var(--texto)';
+    }
+
+    // Se ultrapassou o limite, reduz o último campo alterado
+    if (total > limite) {
+        const excesso = total - limite;
+        // Encontra o último input e reduz
+        for (let i = jogadores.length - 1; i >= 0; i--) {
+            const nome = jogadores[i];
+            const inputBem = document.getElementById('bem-' + nome);
+            const inputTrib = document.getElementById('tributo-' + nome);
+
+            if (inputBem && parseInt(inputBem.value) > 0) {
+                const novoVal = Math.max(0, parseInt(inputBem.value) - excesso);
+                inputBem.value = novoVal;
+                break;
+            } else if (inputTrib && parseInt(inputTrib.value) > 0) {
+                const novoVal = Math.max(0, parseInt(inputTrib.value) - excesso);
+                inputTrib.value = novoVal;
+                break;
+            }
+        }
+        // Recalcula após ajuste
+        atualizarTotalLider();
     }
 }
 
@@ -2057,15 +2086,32 @@ async function confirmarTraicao() {
 
 async function adivinharTraidor() {
     const alvo = obterAlvoSelecionado();
-    window._alvoEventoSelecionado = null; // limpa após usar
+    window._alvoEventoSelecionado = null;
     if (!alvo) { mostrarMensagemFlutuante('Selecione um jogador!'); return; }
-    const resp = await enviarAcaoEvento({ tipo: 'TRAICAO', acao: 'ADIVINHAR', alvo });
-    const msg = resp?.acertou
-        ? '🎯 Você acertou! O traidor perdeu 3 moedas!'
-        : '❌ Você errou! Perdeu 3 moedas.';
-    const painel = obterPainelEvento();
-    if (painel) painel.innerHTML = `<p class="evento-info-neutro">${msg}</p>`;
-    sinalizarEventoConcluido();
+
+    const resp = await enviarAcaoEvento({
+        tipo: 'TRAICAO', acao: 'ADIVINHAR', alvo
+    });
+
+    const painel = document.getElementById('painel-evento-extra');
+    if (painel) {
+        const acertou = resp?.acertou;
+        const traidorReal = resp?.traidorReal || '?';
+        const cor = acertou ? 'var(--sucesso)' : 'var(--perigo)';
+        const emoji = acertou ? '🎯' : '❌';
+        const msg = acertou
+            ? `Você acertou! ${traidorReal} era o traidor e perdeu 3 moedas!`
+            : `Você errou! O traidor era ${traidorReal}. Você perdeu 3 moedas.`;
+
+        painel.innerHTML = `
+            <div style="text-align:center;padding:16px;">
+                <div style="font-size:2.5rem;margin-bottom:8px;">${emoji}</div>
+                <p style="color:${cor};font-weight:bold;font-size:1rem;">
+                    ${msg}
+                </p>
+            </div>
+        `;
+    }
 }
 
 function mostrarInterfaceCopia(evento, painel) {
