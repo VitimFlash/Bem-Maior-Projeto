@@ -277,62 +277,22 @@ function tratarMensagemSala(dados) {
         case 'EM_JOGO':
             estadoAtual = dados;
 
-            // Só remove painel de evento se todos concluíram
-            if (eventoAntesConcluido) {
-                const painelAntesD = document.getElementById('painel-evento-antes');
-                if (painelAntesD) painelAntesD.remove();
-            }
+            const pAntes = document.getElementById('painel-evento-antes');
+            if (pAntes) pAntes.remove();
+            const pDisc = document.getElementById('painel-discussao');
+            if (pDisc) pDisc.remove();
 
-            const painelDiscD = document.getElementById('painel-discussao');
-            if (painelDiscD) painelDiscD.remove();
-
-            if (intervaloDiscussao) {
-                clearInterval(intervaloDiscussao);
-                intervaloDiscussao = null;
-            }
-
-            if (intervaloEventoAntes) {
-                clearInterval(intervaloEventoAntes);
-                intervaloEventoAntes = null;
-                esconderCronometro();
-            }
+            if (intervaloDiscussao) { clearInterval(intervaloDiscussao); intervaloDiscussao = null; }
+            if (intervaloEventoAntes) { clearInterval(intervaloEventoAntes); intervaloEventoAntes = null; }
+            esconderCronometro();
 
             atualizarMesa(dados);
             atualizarInfoRodada(dados);
 
             eventoAntesConcluido = true;
             eventoPendente = false;
-
-            if (!jaConfirmouDecisao) {
-                mostrarFaseDecisao(dados);
-            }
-        break;
-
-        case 'LIDERANCA_VOTOS':
-            atualizarPlacarLideranca(dados.votos);
-        break;
-
-        case 'LIDER_ELEITO':
-            const nomeLider = dados.lider;
-            const souLider = nomeLider === usernameAtual;
-            mostrarMensagemFlutuante('👑 ' + nomeLider + ' é o Líder desta rodada!');
-
-            // Atualiza painel de evento antes para não-líderes
-            const painelLiderAntes = document.getElementById('painel-evento-antes');
-            if (painelLiderAntes && !souLider) {
-                painelLiderAntes.innerHTML = `
-                    <div class="decisao-card">
-                        <h3>👑 Líder Eleito!</h3>
-                        <p style="text-align:center;color:var(--destaque);font-size:1.2rem;">
-                            ${nomeLider} é o Líder!
-                        </p>
-                        <p style="color:var(--texto-fraco);text-align:center;margin-top:8px;">
-                            Aguardando o líder distribuir as moedas...
-                        </p>
-                    </div>
-                `;
-            }
-        break;
+            if (!jaConfirmouDecisao) mostrarFaseDecisao(dados);
+            break;;
         case 'RESULTADO_EVENTO':
              mostrarResultadoEvento(dados);
             break;

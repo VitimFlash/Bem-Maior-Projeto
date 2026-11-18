@@ -41,6 +41,8 @@ public class JogoController {
             new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, String> traidoresPorSala =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Map<String, String>> votosIgualdade = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, String> resultadoIgualdade = new java.util.concurrent.ConcurrentHashMap<>();
 
     // =============================================
     // REST ENDPOINTS
@@ -85,39 +87,21 @@ public class JogoController {
                 String acao = (String) body.get("acao");
                 String alvo = (String) body.get("alvo");
                 String username = auth.getName();
-
+                Map<String, Object> resultado = jogoService.processarAcaoEvento(
+                        codigoSala, username, tipo, acao, alvo, body);
                 // Tratamento especial para bomba
                 if ("BOMBA_RELOGIO".equals(tipo) && "PASSAR".equals(acao)) {
                     return processarPassagemBomba(codigoSala, username, alvo, auth);
                 }
-
-                Map<String, Object> resultado = jogoService.processarAcaoEvento(
-                        codigoSala, username, tipo, acao, alvo, body);
+                if ("IGUALDADE".equals(tipo)) {
+                    votosIgualdade.computeIfAbsent(codigoSala,
+                            k -> new java.util.concurrent.ConcurrentHashMap<>()).put(username, acao);
+                }
                 // Notifica sala se necessário
                 if (resultado.containsKey("notificarSala")) {
                     EstadoSala estado = jogoService.montarEstadoSala(codigoSala);
                     estado.setMensagem((String) resultado.get("mensagemSala"));
                     mensageiro.convertAndSend("/topic/sala/" + codigoSala, estado);
-                }
-                // Após qualquer ação de evento que decide ANTES das moedas,
-                // envia DECISAO para TODOS os jogadores
-                boolean eventoDecideAntes = jogoService
-                        .eventoDecideAntesDasMoedas(tipo);
-                if (eventoDecideAntes && !resultado.containsKey("aguardandoMais")) {
-                    new Thread(() -> {
-                        try {
-                            Thread.sleep(1000);
-                            EstadoSala estadoDecisao =
-                                    jogoService.montarEstadoSala(codigoSala);
-                            estadoDecisao.setFase("DECISAO");
-                            estadoDecisao.setMensagem(
-                                    "Evento concluído! Faça sua escolha.");
-                            mensageiro.convertAndSend(
-                                    "/topic/sala/" + codigoSala, estadoDecisao);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }).start();
                 }
                 if ("TRAICAO".equals(tipo) && "TRAIR".equals(acao) &&
                         resultado.containsKey("traido")) {
@@ -287,34 +271,8 @@ public class JogoController {
         }
 
         private void liberarDecisao(String codigoSala) {
-            new Thread(() -> {
-                try {
-                    // Aplica escolhas de duplicata de tributo
-                    if (escolhasDuplicata.containsKey(codigoSala)) {
-                        Map<String, String> escolhas = escolhasDuplicata.remove(codigoSala);
-                        Sala sala = salaRepository.findByCodigo(codigoSala)
-                                .orElseThrow(() -> new RuntimeException("Sala nao encontrada."));
-
-                        for (Map.Entry<String, String> entry : escolhas.entrySet()) {
-                            // Aplica multiplicador nos tributos via decisão
-                            // (será processado quando calcular tributos)
-                            System.out.println("Duplicata tributo " +
-                                    entry.getKey() + ": " + entry.getValue());
-                        }
-                    }
-
-                    Thread.sleep(500);
-                    EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
-                    estadoDecisao.setFase("DECISAO");
-                    estadoDecisao.setMensagem("Faça sua escolha!");
-                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDecisao);
-                    System.out.println("=== DECISAO LIBERADA PARA TODOS ===");
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } catch (Exception e) {
-                    System.err.println("Erro: " + e.getMessage());
-                }
-            }).start();
+            contadorEventoConcluido.remove(codigoSala);
+            totalJogadoresEvento.remove(codigoSala);
         }
 
         private ResponseEntity<?> processarPassagemBomba(String codigoSala,
@@ -370,18 +328,7 @@ public class JogoController {
 
                     estadoBomba.remove(codigoSala);
 
-                    // Agora sim libera a decisão para todos
-                    new Thread(() -> {
-                        try {
-                            Thread.sleep(3000);
-                            EstadoSala estadoDecisao = jogoService.montarEstadoSala(codigoSala);
-                            estadoDecisao.setFase("DECISAO");
-                            estadoDecisao.setMensagem("Faça sua escolha!");
-                            mensageiro.convertAndSend("/topic/sala/" + codigoSala, estadoDecisao);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }).start();
+                    liberarDecisao(codigoSala);
 
                     return ResponseEntity.ok(Map.of("explodiu", true));
                 }
@@ -600,6 +547,17 @@ public class JogoController {
                         mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgEv);
                         Thread.sleep(4000);
                     }
+                }
+
+                String msgIg = resultadoIgualdade.remove(codigoSala);
+                if (msgIg != null) {
+                    MensagemResultadoEvento msgIgualdade = new MensagemResultadoEvento();
+                    msgIgualdade.nomeEvento = "IGUALDADE";
+                    msgIgualdade.emoji = "🟰";
+                    msgIgualdade.mensagem = msgIg;
+                    msgIgualdade.corBorda = msgIg.contains("foi igualado") ? "#1a7a4a" : "#e67e22";
+                    mensageiro.convertAndSend("/topic/sala/" + codigoSala, msgIgualdade);
+                    Thread.sleep(5000);
                 }
 
                 if (rodadaAtualEv != null && rodadaAtualEv.getEvento() != null &&
@@ -904,6 +862,24 @@ public class JogoController {
                             eventoFinal.getValorEfeito());
                 }
 
+                if ("IGUALDADE".equals(eventoFinal.getTipo())) {
+                    Map<String, String> votos = votosIgualdade.remove(codigoSala);
+                    long sim = votos == null ? 0 : votos.values().stream().filter("SIM"::equals).count();
+                    long nao = ativos.size() - sim;   // quem não votou conta como NÃO
+
+                    if (sim > nao) {
+                        List<Jogador> atuais = jogadorRepository.findBySalaAndAtivoTrue(sala);
+                        int total = atuais.stream().mapToInt(Jogador::getBemPessoal).sum();
+                        int igual = total / atuais.size();
+                        for (Jogador j : atuais) { j.setBemPessoal(igual); jogadorRepository.save(j); }
+                        resultadoIgualdade.put(codigoSala, "🟰 A maioria votou SIM (" + sim + " x " + nao
+                                + "). O bem-pessoal de todos foi igualado!");
+                    } else {
+                        resultadoIgualdade.put(codigoSala, "🟰 A maioria votou NÃO (" + sim + " x " + nao
+                                + "). Nada foi alterado.");
+                    }
+                }
+
                 // Se evento decide ANTES das moedas
                 if (jogoService.eventoDecideAntesDasMoedas(eventoFinal.getTipo())) {
                     for (Jogador jogador : ativos) {
@@ -917,8 +893,18 @@ public class JogoController {
                         mensageiro.convertAndSendToUser(username,
                                 "/queue/estado-jogador-evento", estadoDecisaoEvento);
                     }
-                    // Aguarda 45 segundos para decisão do evento
-                    Thread.sleep(45000);
+                    int espera = 0;
+                    while (contadorEventoConcluido.containsKey(codigoSala) && espera < 45) {
+                        Thread.sleep(1000);
+                        espera++;
+                    }
+                    contadorEventoConcluido.remove(codigoSala);
+                    totalJogadoresEvento.remove(codigoSala);
+
+                    // Dá tempo de o expositor ler o que espiou
+                    if ("EXPOSICAO".equals(eventoFinal.getTipo())) {
+                        Thread.sleep(4000);
+                    }
                 }
                 if (eventoSorteado != null &&
                         jogoService.eventoDecideAntesDasMoedas(eventoSorteado.getTipo())) {
@@ -976,6 +962,7 @@ public class JogoController {
         public String nomeEvento;
         public String emoji;
         public String mensagem;
+        public String corBorda;
     }
 
     static class MensagemConclusaoEvento {
